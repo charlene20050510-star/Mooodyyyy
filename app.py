@@ -6,6 +6,18 @@ from spotipy.oauth2 import SpotifyOAuth
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "devsecret")
 
+@app.route("/env")
+def env_show():
+    v = os.environ.get("SPOTIPY_REDIRECT_URI", "<none>")
+    # 用方括號標示開頭/結尾，順便顯示長度，抓隱藏空白/換行
+    return f"[{v}] len={len(v)}", 200
+
+@app.route("/login_debug")
+def login_debug():
+    url = oauth().get_authorize_url()
+    return f'<a href="{url}">{url}</a>', 200
+
+
 # 權限範圍：讀取歌庫、建立歌單
 SCOPE = "user-library-read playlist-modify-public playlist-modify-private"
 

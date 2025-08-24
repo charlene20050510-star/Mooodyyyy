@@ -57,37 +57,41 @@ def ping():
 def recommend():
     if request.method == "GET":
         return """
-        <h2>Mooodyyy：用一句話描述現在的情境</h2>
+        <h2>Mooodyyy 🎧 輸入你此刻的情境</h2>
         <form method="POST">
-          <textarea name="text" rows="4" style="width:100%;max-width:720px" placeholder="例如：下著雨的凌晨兩點，想聽一點鋼琴讓自己安靜下來"></textarea>
-          <br><button type="submit">送出</button>
+            <textarea name="text" rows="4" style="width:100%;max-width:720px" 
+            placeholder="例如：下著雨的傍晚，想聽一點爵士樂放鬆"></textarea>
+            <br><button type="submit">送出</button>
         </form>
-        <p><a href="/welcome">🏠 回首頁</a></p>
+        <p><a href='/welcome'>↩️ 回首頁</a></p>
         """
-        # 在大眾 Top10 清單 parts.append(...) 後面，加：
-parts.append(f"""
-<form method="POST" action="/create_playlist">
-  <input type="hidden" name="mode" value="public">
-  <input type="hidden" name="text" value="{text}">
-  <button type="submit">➕ 建立「大眾 Top10」歌單到我的 Spotify</button>
-</form>
-""")
 
-# 在我的曲庫 Top10 清單 parts.append(...) 後面，加：
-parts.append(f"""
-<form method="POST" action="/create_playlist">
-  <input type="hidden" name="mode" value="personal">
-  <input type="hidden" name="text" value="{text}">
-  <button type="submit">➕ 建立「我的曲庫 Top10」歌單到我的 Spotify</button>
-</form>
-""")
-
-    # POST：使用者送出後
     text = (request.form.get("text") or "").strip()
     if not text:
-        return "請輸入一句話描述情境。<br><a href='/recommend'>返回</a>"
+        return "⚠️ 沒有輸入文字", 400
 
-    return f"<h3>你剛剛輸入的文字：</h3><p>{text}</p><p><a href='/recommend'>↩︎ 再試一次</a></p>"
+    # 呼叫 OpenAI embedding API
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    emb = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text
+    )
+
+    vector = emb.data[0].embedding
+    preview = ", ".join([f"{x:.6f}" for x in vector[:10]])
+
+    html = f"""
+    <h2>輸入文字：</h2>
+    <p>{text}</p>
+    <h3>Embedding 向量</h3>
+    <p>維度：{len(vector)}</p>
+    <p>前 10 個數值：</p>
+    <pre>{preview}</pre>
+    <hr>
+    <p><a href='/recommend'>↩️ 再試一次</a></p>
+    <p><a href='/welcome'>🏠 回首頁</a></p>
+    """
+    return html
 
 @app.route("/create_playlist", methods=["POST"])
 def create_playlist():

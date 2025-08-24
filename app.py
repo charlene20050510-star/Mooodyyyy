@@ -433,6 +433,7 @@ def recommend():
 
         # 一次查 features（省請求）
         # 只收集看起來像 track 的 id，去重，限量 300
+# 只收集看起來像 track 的 id，去重，限量 300
 ids = []
 seen = set()
 for t in (user_pool + ext_pool):
@@ -442,7 +443,9 @@ for t in (user_pool + ext_pool):
         seen.add(tid)
         if len(ids) >= 300:
             break
-        feats = audio_features_map(sp, ids)
+
+# ✅ for 迴圈結束後，再呼叫一次
+feats = audio_features_map(sp, ids)
 
         used = set()
         pick_user = pick_top_n(user_pool, feats, params, n=3, used_ids=used)
@@ -530,6 +533,7 @@ def create_playlist():
         return "沒有可加入的歌曲。<a href='/recommend'>返回</a>"
 
     # 只收集看起來像 track 的 id，去重，限量 300
+# 只收集看起來像 track 的 id，去重，限量 300
 ids = []
 seen = set()
 for t in (user_pool + ext_pool):
@@ -540,7 +544,8 @@ for t in (user_pool + ext_pool):
         if len(ids) >= 300:
             break
 
-    feats = audio_features_map(sp, ids)
+# ✅ for 迴圈結束後，再呼叫一次
+feats = audio_features_map(sp, ids)
 
     used = set()
     pick_user = pick_top_n(user_pool, feats, params, n=3, used_ids=used)

@@ -433,33 +433,34 @@ def recommend():
 
         # 一次查 features（省請求）
     
-ids = []
-seen = set()
-for t in (user_pool + ext_pool):
-    tid = t.get("id")
-    if isinstance(tid, str) and len(tid) == 22 and tid not in seen:
-        ids.append(tid)
-        seen.add(tid)
-        if len(ids) >= 300:
-            break
+        # 只收集看起來像 track 的 id，去重，限量 300
+    ids = []
+    seen = set()
+    for t in (user_pool + ext_pool):
+        tid = t.get("id")
+        if isinstance(tid, str) and len(tid) == 22 and tid not in seen:
+            ids.append(tid)
+            seen.add(tid)
+            if len(ids) >= 300:
+                break
+    
+    feats = audio_features_map(sp, ids)
+    
+    used = set()
+    pick_user = pick_top_n(user_pool, feats, params, n=3, used_ids=used)
+    pick_ext  = pick_top_n(ext_pool,  feats, params, n=7, used_ids=used)
+    
+    # 不足互補到 10 首
+    if len(pick_user) + len(pick_ext) < 10:
+        remain = 10 - (len(pick_user) + len(pick_ext))
+        pick_ext += pick_top_n(ext_pool, feats, params, n=remain, used_ids=used)
+    if len(pick_user) + len(pick_ext) < 10:
+        remain = 10 - (len(pick_user) + len(pick_ext))
+        pick_user += pick_top_n(user_pool, feats, params, n=remain, used_ids=used)
+    
+    top10 = (pick_user + pick_ext)[:10]
+    dt = time.time() - t0
 
-# ✅ for 迴圈結束後，再呼叫一次
-feats = audio_features_map(sp, ids)
-
-used = set()
-pick_user = pick_top_n(user_pool, feats, params, n=3, used_ids=used)
-pick_ext  = pick_top_n(ext_pool,  feats, params, n=7, used_ids=used)
-
-# 不足互補到 10 首
-if len(pick_user) + len(pick_ext) < 10:
-    remain = 10 - (len(pick_user) + len(pick_ext))
-    pick_ext += pick_top_n(ext_pool, feats, params, n=remain, used_ids=used)
-if len(pick_user) + len(pick_ext) < 10:
-    remain = 10 - (len(pick_user) + len(pick_ext))
-    pick_user += pick_top_n(user_pool, feats, params, n=remain, used_ids=used)
-
-top10 = (pick_user + pick_ext)[:10]
-dt = time.time() - t0
 
         # ✅ 這行一定要是一行，不能斷！
         songs_html = "\n".join(item_li(i + 1, tr) for i, tr in enumerate(top10))
@@ -531,33 +532,33 @@ def create_playlist():
     if not user_pool and not ext_pool:
         return "沒有可加入的歌曲。<a href='/recommend'>返回</a>"
 
-# 只收集看起來像 track 的 id，去重，限量 300
-ids = []
-seen = set()
-for t in (user_pool + ext_pool):
-    tid = t.get("id")
-    if isinstance(tid, str) and len(tid) == 22 and tid not in seen:
-        ids.append(tid)
-        seen.add(tid)
-        if len(ids) >= 300:
-            break
-
-# ✅ for 迴圈結束後，再呼叫一次
-feats = audio_features_map(sp, ids)
-
-used = set()
-pick_user = pick_top_n(user_pool, feats, params, n=3, used_ids=used)
-pick_ext  = pick_top_n(ext_pool,  feats, params, n=7, used_ids=used)
-
-# 不足互補到 10 首
-if len(pick_user) + len(pick_ext) < 10:
-    remain = 10 - (len(pick_user) + len(pick_ext))
-    pick_ext += pick_top_n(ext_pool, feats, params, n=remain, used_ids=used)
-if len(pick_user) + len(pick_ext) < 10:
-    remain = 10 - (len(pick_user) + len(pick_ext))
-    pick_user += pick_top_n(user_pool, feats, params, n=remain, used_ids=used)
-
-top10 = (pick_user + pick_ext)[:10]
+    # 只收集看起來像 track 的 id，去重，限量 300
+    ids = []
+    seen = set()
+    for t in (user_pool + ext_pool):
+        tid = t.get("id")
+        if isinstance(tid, str) and len(tid) == 22 and tid not in seen:
+            ids.append(tid)
+            seen.add(tid)
+            if len(ids) >= 300:
+                break
+    
+    # ✅ for 迴圈結束後，再呼叫一次
+    feats = audio_features_map(sp, ids)
+    
+    used = set()
+    pick_user = pick_top_n(user_pool, feats, params, n=3, used_ids=used)
+    pick_ext  = pick_top_n(ext_pool,  feats, params, n=7, used_ids=used)
+    
+    # 不足互補到 10 首
+    if len(pick_user) + len(pick_ext) < 10:
+        remain = 10 - (len(pick_user) + len(pick_ext))
+        pick_ext += pick_top_n(ext_pool, feats, params, n=remain, used_ids=used)
+    if len(pick_user) + len(pick_ext) < 10:
+        remain = 10 - (len(pick_user) + len(pick_ext))
+        pick_user += pick_top_n(user_pool, feats, params, n=remain, used_ids=used)
+    
+    top10 = (pick_user + pick_ext)[:10]
 
     user = sp.current_user()
     user_id = (user or {}).get("id")

@@ -1,24 +1,22 @@
 from flask import Flask, request, redirect, session, url_for
-import os, time
+import os
+import time
 from datetime import datetime
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
-# ---------------------------
-# Flask app config
-# ---------------------------
+# ======================================================
+# Flask & Spotify OAuth setup
+# ======================================================
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "devsecret")
 
-# Spotify scopes: read library (optional), create/modify playlists (required)
+# Add user-top-read to allow using user's top tracks as fallback
 SCOPE = "user-library-read user-top-read playlist-modify-public playlist-modify-private"
 
-# ---------------------------
-# OAuth helpers
-# ---------------------------
 
-def oauth() -> SpotifyOAuth:
-    """Create a SpotifyOAuth object. The redirect URI MUST match Spotify Dashboard."""
+def oauth():
+    """Create a SpotifyOAuth instance. Redirect URI must exactly match Spotify Dashboard."""
     return SpotifyOAuth(
         client_id=os.environ.get("SPOTIPY_CLIENT_ID"),
         client_secret=os.environ.get("SPOTIPY_CLIENT_SECRET"),
@@ -26,51 +24,48 @@ def oauth() -> SpotifyOAuth:
         scope=SCOPE,
         cache_path=None,
         open_browser=False,
-        show_dialog=True,  # always show account picker to avoid stale sessions
+        show_dialog=True,  # force account picker / consent refresh
     )
 
 
-def _store_token(token_info: dict) -> None:
-    """Persist full token dict (access + refresh + expiry)."""
+# ---------------- Token helpers (access + refresh) -----------------
+
+def _store_token(token_info):
     if not token_info:
         return
-    # Some refresh responses may omit refresh_token; keep the old one
     old = session.get("token", {})
     if old and not token_info.get("refresh_token"):
         token_info["refresh_token"] = old.get("refresh_token")
     session["token"] = token_info
 
 
-def _get_valid_token() -> dict | None:
-    """Return a valid (possibly refreshed) token_info dict, or None if missing."""
+def _get_valid_token():
     tok = session.get("token")
     if not tok:
         return None
-    # refresh a bit early (60s before expiry)
-    needs_refresh = time.time() > (tok.get("expires_at", 0) - 60) and tok.get("refresh_token")
-    if needs_refresh:
-        try:
+    # refresh 60s before expiry if we have a refresh token
+    try:
+        if time.time() > (tok.get("expires_at", 0) - 60) and tok.get("refresh_token"):
             new_tok = oauth().refresh_access_token(tok["refresh_token"]) or {}
             _store_token({**tok, **new_tok})
             tok = session.get("token")
-        except Exception as e:
-            print(f"⚠️ refresh_access_token failed: {e}")
-            # fall through; client may still work if token valid
+    except Exception as e:
+        print(f"⚠️ refresh_access_token failed: {e}")
     return tok
 
 
-def get_spotify_client() -> spotipy.Spotify | None:
+def get_spotify_client():
     tok = _get_valid_token()
     if not tok:
         return None
     return spotipy.Spotify(auth=tok.get("access_token"), requests_timeout=15)
 
 
-# ---------------------------
-# Simple rules → audio feature targets (can be replaced by embeddings later)
-# ---------------------------
+# ======================================================
+# Simple rules → target features (can swap to embeddings later)
+# ======================================================
 
-def map_text_to_params(text: str):
+def map_text_to_params(text):
     t = (text or "").lower()
     params = {
         "target_energy": 0.5,
@@ -97,18 +92,20 @@ def map_text_to_params(text: str):
     return params
 
 
-# Small caches
+# ======================================================
+# Spotify helpers (fetch pool, features, ranking)
+# ======================================================
 CACHE = {"feat": {}}
 
 
-def fetch_playlist_tracks(sp: spotipy.Spotify, playlist_id: str, max_n: int = 100):
-    """Fetch items from a public playlist, with resilient market fallbacks."""
+def fetch_playlist_tracks(sp, playlist_id, max_n=100):
+    """Fetch items from a playlist with resilient market fallbacks."""
     tracks = []
     offset = 0
     market_trials = [None, "from_token", "TW", "US"]
     while len(tracks) < max_n:
         try:
-            market = market_trials[min(offset // 200, len(market_trials)-1)]  # change market after a couple pages
+            market = market_trials[min(offset // 200, len(market_trials) - 1)]
             kwargs = {"limit": 50, "offset": offset}
             if market is not None:
                 kwargs["market"] = market
@@ -131,65 +128,15 @@ def fetch_playlist_tracks(sp: spotipy.Spotify, playlist_id: str, max_n: int = 10
     return tracks
 
 
-def audio_features_map(sp: spotipy.Spotify, track_ids: list[str]):
-    feats = {}
-    to_query = []
-    for tid in track_ids:
-        if tid in CACHE["feat"]:
-            feats[tid] = CACHE["feat"][tid]
-        else:
-            to_query.append(tid)
-    for i in range(0, len(to_query), 50):
-        chunk = to_query[i : i + 50]
-        res = sp.audio_features(chunk) or []
-        for f in res:
-            if not f:
-                continue
-            tid = f.get("id")
-            if tid:
-                CACHE["feat"][tid] = f
-                feats[tid] = f
-    return feats
+def get_candidate_tracks(sp, max_n=150):
+    """Return a pool of tracks from multiple sources (public + featured + user)."""
+    pool = []
 
-
-def _dist(a, b):
-    return abs((a or 0) - (b or 0))
-
-
-def score_track(f: dict | None, p: dict) -> float:
-    if not f:
-        return 1e9
-    s = 0.0
-    s += _dist(f.get("energy"), p["target_energy"])  # energy gap
-    s += _dist(f.get("valence"), p["target_valence"])  # positivity gap
-    tempo = f.get("tempo") or p["target_tempo"]
-    s += min(abs(tempo - p["target_tempo"]) / 60.0, 1.0)  # tempo gap (capped)
-    if p["prefer_acoustic"]:
-        s += (1.0 - (f.get("acousticness") or 0)) * 0.5
-    if p["prefer_instrumental"]:
-        s += (1.0 - (f.get("instrumentalness") or 0)) * 0.5
-    return s
-
-
-def select_top(tracks: list[dict], feats: dict, params: dict, top_n: int = 10):
-    scored = []
-    for t in tracks:
-        tid = t.get("id")
-        s = score_track(feats.get(tid), params)
-        scored.append((s, t))
-    scored.sort(key=lambda x: x[0])
-    return [t for _, t in scored[:top_n]]
-
-
-def get_candidate_tracks(sp: spotipy.Spotify, max_n: int = 150):
-    """Return a pool of tracks from several resilient sources."""
-    pool: list[dict] = []
-
-    # 1) Known global playlists (may rotate regionally)
+    # 1) Known public playlists (region may vary)
     public_lists = [
         "37i9dQZF1DXcBWIGoYBM5M",  # Today's Top Hits
         "37i9dQZEVXbMDoHDwVN2tF",  # Global Top 50
-        "37i9dQZF1DX4dyzvuaRJ0n",  # Hot Hits Taiwan (example; may vary)
+        "37i9dQZF1DX4dyzvuaRJ0n",  # Hot Hits Taiwan (example)
     ]
     for pid in public_lists:
         try:
@@ -210,7 +157,7 @@ def get_candidate_tracks(sp: spotipy.Spotify, max_n: int = 150):
     except Exception as e:
         print(f"⚠️ featured_playlists failed: {e}")
 
-    # 3) User top tracks
+    # 3) User top tracks (needs user-top-read)
     try:
         tops = sp.current_user_top_tracks(limit=50, time_range="medium_term")
         for it in (tops or {}).get("items", []):
@@ -241,9 +188,60 @@ def get_candidate_tracks(sp: spotipy.Spotify, max_n: int = 150):
 
     return pool[:max_n]
 
-# ---------------------------
+
+def audio_features_map(sp, track_ids):
+    feats = {}
+    to_query = []
+    for tid in track_ids:
+        if tid in CACHE["feat"]:
+            feats[tid] = CACHE["feat"][tid]
+        else:
+            to_query.append(tid)
+    for i in range(0, len(to_query), 50):
+        chunk = to_query[i:i + 50]
+        res = sp.audio_features(chunk) or []
+        for f in res:
+            if not f:
+                continue
+            tid = f.get("id")
+            if tid:
+                CACHE["feat"][tid] = f
+                feats[tid] = f
+    return feats
+
+
+def _dist(a, b):
+    return abs((a or 0) - (b or 0))
+
+
+def score_track(f, p):
+    if not f:
+        return 1e9
+    s = 0.0
+    s += _dist(f.get("energy"), p["target_energy"])  # energy gap
+    s += _dist(f.get("valence"), p["target_valence"])  # positivity gap
+    tempo = f.get("tempo") or p["target_tempo"]
+    s += min(abs(tempo - p["target_tempo"]) / 60.0, 1.0)  # tempo gap (capped)
+    if p["prefer_acoustic"]:
+        s += (1.0 - (f.get("acousticness") or 0)) * 0.5
+    if p["prefer_instrumental"]:
+        s += (1.0 - (f.get("instrumentalness") or 0)) * 0.5
+    return s
+
+
+def select_top(tracks, feats, params, top_n=10):
+    scored = []
+    for t in tracks:
+        tid = t.get("id")
+        s = score_track(feats.get(tid), params)
+        scored.append((s, t))
+    scored.sort(key=lambda x: x[0])
+    return [t for _, t in scored[:top_n]]
+
+
+# ======================================================
 # Routes
-# ---------------------------
+# ======================================================
 
 @app.route("/")
 def home():
@@ -321,13 +319,12 @@ def welcome():
     return html
 
 
-@app.route("/recommend", methods=["GET", "POST"]) 
+@app.route("/recommend", methods=["GET", "POST"])
 def recommend():
     sp = get_spotify_client()
     if not sp:
         return redirect(url_for("home"))
 
-    text = ""
     if request.method == "POST":
         text = (request.form.get("text") or "").strip()
     else:
@@ -337,17 +334,11 @@ def recommend():
         return redirect(url_for("welcome"))
 
     try:
-        # Candidate source playlists (can add more)
-                # Build a resilient candidate pool
         tracks = get_candidate_tracks(sp, max_n=150)
         if not tracks:
             return """
                 <h2>❌ 暫時無法獲取歌曲</h2>
                 <p>Spotify API 或權限受限，請稍後再試或到 Spotify 開啟「最近常聽」與「已儲存歌曲」。</p>
-                <a href='/welcome'>回首頁</a>
-            """ """
-                <h2>❌ 暫時無法獲取歌曲</h2>
-                <p>Spotify API 似乎暫時不可用，請稍後再試。</p>
                 <a href='/welcome'>回首頁</a>
             """
 
@@ -365,14 +356,14 @@ def recommend():
                 <a href='/welcome'>重新嘗試</a>
             """
 
-        # Buttons to create playlist
         def item_li(i, tr):
             name = tr.get("name", "Unknown")
             artists = ", ".join([a.get("name", "") for a in tr.get("artists", [])])
             url = (tr.get("external_urls") or {}).get("spotify", "#")
             return f"<li style='margin:8px 0; list-style:none;'>{i:02d}. <a href='{url}' target='_blank' style='color:#1DB954'><strong>{artists}</strong> - {name}</a></li>"
 
-        songs_html = "\n".join(item_li(i + 1, tr) for i, tr in enumerate(top10))
+        songs_html = "
+".join(item_li(i + 1, tr) for i, tr in enumerate(top10))
 
         buttons_html = f"""
         <div style='margin: 20px 0;'>
@@ -434,9 +425,8 @@ def create_playlist():
     if not text or mode not in ("public", "private"):
         return "參數不完整。<a href='/recommend'>返回</a>"
 
-    # Recompute same Top 10 for consistency with the shown list
     params = map_text_to_params(text)
-        tracks = get_candidate_tracks(sp, max_n=150)
+    tracks = get_candidate_tracks(sp, max_n=150)
     if not tracks:
         return "沒有可加入的歌曲。<a href='/recommend'>返回</a>"
 

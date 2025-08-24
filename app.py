@@ -53,6 +53,26 @@ def callback():
 def ping():
     return "PING OK", 200
 
+@app.route("/recommend", methods=["GET", "POST"])
+def recommend():
+    if request.method == "GET":
+        return """
+        <h2>Mooodyyy：用一句話描述現在的情境</h2>
+        <form method="POST">
+          <textarea name="text" rows="4" style="width:100%;max-width:720px" placeholder="例如：下著雨的凌晨兩點，想聽一點鋼琴讓自己安靜下來"></textarea>
+          <br><button type="submit">送出</button>
+        </form>
+        <p><a href="/welcome">🏠 回首頁</a></p>
+        """
+
+    # POST：使用者送出後
+    text = (request.form.get("text") or "").strip()
+    if not text:
+        return "請輸入一句話描述情境。<br><a href='/recommend'>返回</a>"
+
+    return f"<h3>你剛剛輸入的文字：</h3><p>{text}</p><p><a href='/recommend'>↩︎ 再試一次</a></p>"
+
+
 # （除錯用；需要時保留）
 @app.route("/env")
 def env_show():

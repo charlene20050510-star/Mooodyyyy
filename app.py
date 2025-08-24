@@ -53,142 +53,213 @@ def callback():
 def ping():
     return "PING OK", 200
 
-@app.route("/recommend", methods=["GET", "POST"])
+import time
+from collections import defaultdict
+
+# 小快取（重複輸入不上 OpenAI / 重複歌曲不上 audio_features）
+CACHE = {"emb": {}, "feat": {}}
+
+def map_text_to_params(text: str):
+    """把自然語言變成音樂參數（簡化版規則，可之後換成 embedding 相似度）"""
+    t = text.lower()
+    params = {
+        "target_energy": 0.5,
+        "target_valence": 0.5,
+        "target_tempo": 110.0,
+        "prefer_acoustic": False,
+        "prefer_instrumental": False,
+        "seed_genres": []
+    }
+    if any(k in t for k in ["累", "疲", "sad", "lonely", "emo", "哭"]):
+        params.update({"target_energy": 0.2, "target_valence": 0.25, "target_tempo": 80})
+    if any(k in t for k in ["開心", "爽", "happy", "party", "嗨"]):
+        params.update({"target_energy": 0.8, "target_valence": 0.8, "target_tempo": 125})
+    if any(k in t for k in ["讀書", "專心", "focus", "工作", "coding"]):
+        params.update({"target_energy": 0.3, "target_valence": 0.5, "target_tempo": 90})
+    if any(k in t for k in ["爵士", "jazz"]): params["seed_genres"].append("jazz")
+    if any(k in t for k in ["lofi", "lo-fi", "lo fi", "輕音"]): params["seed_genres"].append("lo-fi")
+    if any(k in t for k in ["鋼琴", "piano", "acoustic"]): params["prefer_acoustic"] = True
+    if any(k in t for k in ["純音樂", "instrumental"]): params["prefer_instrumental"] = True
+    return params
+
+def fetch_playlist_tracks(sp, playlist_id: str, max_n: int = 100):
+    """從指定歌單抓歌（候選集先小：最多 100 首）"""
+    tracks = []
+    offset = 0
+    while len(tracks) < max_n:
+        batch = sp.playlist_items(playlist_id, offset=offset, limit=50)
+        items = batch.get("items", [])
+        if not items: break
+        for it in items:
+            tr = (it or {}).get("track") or {}
+            if tr.get("id"): tracks.append(tr)
+            if len(tracks) >= max_n: break
+        if not batch.get("next"): break
+        offset += 50
+    return tracks
+
+def audio_features_map(sp, track_ids):
+    """用快取 + 批次查 audio_features"""
+    feats = {}
+    to_query = []
+    for tid in track_ids:
+        if tid in CACHE["feat"]:
+            feats[tid] = CACHE["feat"][tid]
+        else:
+            to_query.append(tid)
+    for i in range(0, len(to_query), 50):
+        chunk = to_query[i:i+50]
+        res = sp.audio_features(chunk) or []
+        for f in (res or []):
+            if not f: continue
+            tid = f.get("id")
+            if tid:
+                CACHE["feat"][tid] = f
+                feats[tid] = f
+    return feats
+
+def score_track(f, p):
+    """簡單打分：越接近目標越好；可再加權"""
+    if not f: return 1e9
+    def d(a,b): return abs((a or 0) - (b or 0))
+    s = 0.0
+    s += d(f.get("energy"), p["target_energy"])
+    s += d(f.get("valence"), p["target_valence"])
+    # tempo 有時為零或 None，先做防呆
+    tempo = f.get("tempo") or p["target_tempo"]
+    s += min(abs(tempo - p["target_tempo"]) / 60.0, 1.0)
+    if p["prefer_acoustic"]:
+        s += (1.0 - (f.get("acousticness") or 0)) * 0.5
+    if p["prefer_instrumental"]:
+        s += (1.0 - (f.get("instrumentalness") or 0)) * 0.5
+    return s
+
+def select_top(tracks, feats, params, top_n=10):
+    scored = []
+    for t in tracks:
+        tid = t.get("id")
+        f = feats.get(tid)
+        s = score_track(f, params)
+        scored.append((s, t))
+    scored.sort(key=lambda x: x[0])
+    return [t for _, t in scored[:top_n]]
+
+@app.route("/recommend", methods=["GET","POST"])
 def recommend():
-    if request.method == "GET":
-        return """
-        <h2>Mooodyyy 🎧 輸入你此刻的情境</h2>
-        <form method="POST">
-            <textarea name="text" rows="4" style="width:100%;max-width:720px" 
-            placeholder="例如：下著雨的傍晚，想聽一點爵士樂放鬆"></textarea>
-            <br><button type="submit">送出</button>
-        </form>
-        <p><a href='/welcome'>↩️ 回首頁</a></p>
-        """
-
-    text = (request.form.get("text") or "").strip()
-    if not text:
-        return "⚠️ 沒有輸入文字", 400
-
-    # 呼叫 OpenAI embedding API
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    emb = client.embeddings.create(
-        model="text-embedding-3-small",
-        input=text
-    )
-
-    vector = emb.data[0].embedding
-    preview = ", ".join([f"{x:.6f}" for x in vector[:10]])
-
-    html = f"""
-    <h2>輸入文字：</h2>
-    <p>{text}</p>
-    <h3>Embedding 向量</h3>
-    <p>維度：{len(vector)}</p>
-    <p>前 10 個數值：</p>
-    <pre>{preview}</pre>
-    <hr>
-    <p><a href='/recommend'>↩️ 再試一次</a></p>
-    <p><a href='/welcome'>🏠 回首頁</a></p>
-    """
-    return html
-
-@app.route("/create_playlist", methods=["POST"])
-def create_playlist():
-    # 1) 權限與參數
     if "access_token" not in session:
         return redirect(url_for("home"))
-    sp = spotipy.Spotify(auth=session["access_token"])
-
-    mode = (request.form.get("mode") or "").strip()      # "public" 或 "personal"
+    if request.method == "GET":
+        return """
+        <h2>Mooodyyy 🎵 請輸入一句話描述你的情境</h2>
+        <form method="POST">
+          <textarea name="text" rows="4" style="width:100%;max-width:720px"
+            placeholder="例：下雨的夜晚想聽鋼琴放鬆；或：想專心讀書的純音樂"></textarea><br>
+          <button type="submit">生成 Top 10</button>
+        </form>
+        <p><a href="/welcome">🏠 回首頁</a></p>
+        """
+    # POST
     text = (request.form.get("text") or "").strip()
-    if mode not in ("public", "personal") or not text:
-        return "參數不完整。<a href='/recommend'>返回</a>"
-
-    # 2) 把文字轉成音樂參數（你前面已經貼過 map_text_to_params）
+    if not text:
+        return "請輸入一句話。<a href='/recommend'>返回</a>"
     params = map_text_to_params(text)
 
-    # 3) 準備候選歌曲
-    tracks = []
-    if mode == "public":
-        # 用 Spotify 官方 Global Top 50 歌單（或用你的環境變數覆蓋）
-        top_id = os.environ.get("GLOBAL_TOP_PLAYLIST_ID", "37i9dQZEVXbMDoHDwVN2tF")
-        tracks = fetch_playlist_tracks(sp, top_id, max_n=150)
-    else:  # personal
-        # 抓你按過 ❤️ 的 Liked Songs（最多 300 首）
-        saved_ids, offset = [], 0
-        while len(saved_ids) < 300:
-            try:
-                batch = sp.current_user_saved_tracks(limit=50, offset=offset)
-            except Exception as e:
-                print("⚠️ saved_tracks fail:", e); break
-            items = batch.get("items", [])
-            if not items: break
-            for it in items:
-                tr = (it or {}).get("track") or {}
-                tid = tr.get("id")
-                if tid: saved_ids.append(tid)
-            if not batch.get("next"): break
-            offset += 50
+    # Spotify 用 timeout，避免卡住
+    sp = spotipy.Spotify(auth=session["access_token"], requests_timeout=10)
 
-        if not saved_ids:
-            return "你的曲庫目前沒有收藏歌曲，無法建立個人歌單。<a href='/recommend'>返回</a>"
-
-        # 轉回完整 track 物件
-        for i in range(0, len(saved_ids), 50):
-            chunk = saved_ids[i:i+50]
-            try:
-                resp = sp.tracks(chunk)
-                tracks.extend(resp.get("tracks", []))
-            except Exception as e:
-                print("⚠️ tracks fail:", e)
-
-    if not tracks:
-        return "找不到候選歌曲，無法建立歌單。<a href='/recommend'>返回</a>"
-
-    # 4) 取出音樂特徵並評分，挑前 10
+    # 候選集先用官方 Global Top 50（可用環境變數覆蓋）
+    top_id = os.environ.get("GLOBAL_TOP_PLAYLIST_ID", "37i9dQZEVXbMDoHDwVN2tF")
+    t0 = time.time()
+    tracks = fetch_playlist_tracks(sp, top_id, max_n=100)  # 先抓 100
     ids = [t.get("id") for t in tracks if t.get("id")]
     feats = audio_features_map(sp, ids)
     top10 = select_top(tracks, feats, params, top_n=10)
+    dt = time.time() - t0
 
     if not top10:
-        return "沒有符合條件的歌曲。<a href='/recommend'>返回</a>"
+        return "暫時挑不到符合的歌，試試別的描述？<a href='/recommend'>返回</a>"
 
-    # 5) 建立 Spotify 歌單 + 加入歌曲
+    li = []
+    for i, t in enumerate(top10, 1):
+        nm = t.get("name","")
+        artists = ", ".join(a.get("name","") for a in t.get("artists",[]))
+        url = (t.get("external_urls") or {}).get("spotify","#")
+        li.append(f"<li>{i:02d}. <a href='{url}' target='_blank'>{artists} — {nm}</a></li>")
+
+    # 兩個建立歌單按鈕（公開/私人）
+    html_btn = f"""
+    <form method="POST" action="/create_playlist" style="display:inline;margin-right:8px">
+      <input type="hidden" name="mode" value="public">
+      <input type="hidden" name="text" value="{text}">
+      <button type="submit">➕ 建立公開歌單</button>
+    </form>
+    <form method="POST" action="/create_playlist" style="display:inline">
+      <input type="hidden" name="mode" value="private">
+      <input type="hidden" name="text" value="{text}">
+      <button type="submit">➕ 建立私人歌單</button>
+    </form>
+    """
+
+    return f"""
+    <h2>Top 10 推薦</h2>
+    <p>情境：{text}</p>
+    <p>（候選集 100 首，花費 {dt:.2f}s）</p>
+    <ol>{''.join(li)}</ol>
+    {html_btn}
+    <p><a href="/recommend">↩︎ 再試一次</a> ｜ <a href="/welcome">🏠 回首頁</a></p>
+    """
+
+@app.route("/create_playlist", methods=["POST"])
+def create_playlist():
+    if "access_token" not in session:
+        return redirect(url_for("home"))
+    mode = (request.form.get("mode") or "private").strip()  # public/private
+    text = (request.form.get("text") or "").strip()
+    if not text or mode not in ("public","private"):
+        return "參數不完整。<a href='/recommend'>返回</a>"
+
+    sp = spotipy.Spotify(auth=session["access_token"], requests_timeout=10)
+
+    # 和 /recommend 一樣跑一次（簡化：保持一致的 Top10）
+    params = map_text_to_params(text)
+    top_id = os.environ.get("GLOBAL_TOP_PLAYLIST_ID", "37i9dQZEVXbMDoHDwVN2tF")
+    tracks = fetch_playlist_tracks(sp, top_id, max_n=100)
+    ids = [t.get("id") for t in tracks if t.get("id")]
+    feats = audio_features_map(sp, ids)
+    top10 = select_top(tracks, feats, params, top_n=10)
+    if not top10:
+        return "沒有可加入的歌曲。<a href='/recommend'>返回</a>"
+
     user_id = sp.current_user()["id"]
     from datetime import datetime
     ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-    title = f"Mooodyyy · {('大眾Top10' if mode=='public' else '我的曲庫Top10')} · {ts} UTC"
-    desc = f"情境：{text} ｜ 參數：energy {params['target_energy']}, valence {params['target_valence']}, tempo {params['target_tempo']}"
+    title = f"Mooodyyy · {ts} UTC"
+    desc = f"情境：{text}"
 
-    # public 模式設公開，personal 設私人（你可以反過來，隨你）
-    is_public = True if mode == "public" else False
-    playlist = sp.user_playlist_create(user=user_id, name=title, public=is_public, description=desc)
+    playlist = sp.user_playlist_create(
+        user=user_id,
+        name=title,
+        public=(mode == "public"),
+        description=desc
+    )
+    sp.playlist_add_items(playlist_id=playlist["id"], items=[t["id"] for t in top10])
+    url = (playlist.get("external_urls") or {}).get("spotify","#")
 
-    track_ids = [t["id"] for t in top10 if t.get("id")]
-    # 一次最多 100 首，這裡只有 10 首，直接加
-    sp.playlist_add_items(playlist_id=playlist["id"], items=track_ids)
-
-    playlist_url = (playlist.get("external_urls") or {}).get("spotify", "#")
-
-    # 6) 回應頁面
     items_html = []
     for i, t in enumerate(top10, 1):
         nm = t.get("name", "")
         artists = ", ".join(a.get("name","") for a in t.get("artists",[]))
-        url = (t.get("external_urls") or {}).get("spotify","#")
-        items_html.append(f"<li>{i:02d}. <a href='{url}' target='_blank'>{artists} — {nm}</a></li>")
+        u = (t.get("external_urls") or {}).get("spotify","#")
+        items_html.append(f"<li>{i:02d}. <a href='{u}' target='_blank'>{artists} — {nm}</a></li>")
 
     return f"""
-    <h2>✅ 成功建立歌單！</h2>
-    <p>歌單：<a href="{playlist_url}" target="_blank">{title}</a></p>
-    <p>模式：{"大眾 Top10" if mode=="public" else "我的曲庫 Top10"}</p>
+    <h2>✅ 已建立歌單：<a href="{url}" target="_blank">{title}</a></h2>
+    <p>模式：{"公開" if mode=="public" else "私人"}</p>
     <p>情境：{text}</p>
     <h3>曲目：</h3>
     <ol>{''.join(items_html)}</ol>
     <p><a href="/recommend">↩︎ 回推薦頁</a> ｜ <a href="/welcome">🏠 回首頁</a></p>
     """
-
 
 # （除錯用；需要時保留）
 @app.route("/env")

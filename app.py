@@ -229,62 +229,67 @@ def generate():
     if not sp:
         return redirect(url_for("home"))
 
+    # 1) 讀取 mood 與語言參數
     mood = (request.args.get("mood") or "chill").lower()
     allow_langs = set(request.args.getlist("lang"))  # 例：?lang=zh&lang=en
 
-    # 1) 取使用者資訊
+    # 2) 使用者資訊
     try:
         me = sp.current_user()
         user_id = me["id"]
-    except Exception as e:
+    except Exception:
         return "❌ Spotify 連線失敗，請回首頁重新登入。<br><a href='/'>回首頁</a>"
 
-    # 2) 撈收藏歌曲 ID（無則提示）
+    # 3) 撈收藏歌曲
     saved_ids = fetch_saved_track_ids(sp, max_n=400)
     if not saved_ids:
-        return "❌ 你還沒有收藏任何歌曲，請先在 Spotify 按幾首喜歡的歌再試一次。<br><a href='/welcome'>返回</a>"
+        return "❌ 你還沒有收藏任何歌曲，請先去 Spotify 收藏一些再試一次。<br><a href='/welcome'>返回</a>"
 
     seed_pool_ids = saved_ids[:]
     saved_tracks = fetch_tracks_by_ids(sp, saved_ids)
     feats = fetch_audio_features(sp, saved_ids)
 
-    # 3) 語言過濾 + 多樣化
+    # 4) 語言過濾 + 多樣化處理
     base = saved_tracks
     if allow_langs:
         base = filter_by_language(base, allow_langs)
     random.shuffle(base)
     base = diversify_by_artist(base, max_per_artist=2)
 
-    # 4) 先從收藏依情緒挑
-    chosen_tracks = pick_with_features(base, feats, mood, k=30)
-    have_ids = set(t.get("id") for t in chosen_tracks if t and t.get("id"))
+    # 5) 選曲比例設定
+    TARGET_N = 30
+    RATIO_SAVED = 0.25
+    want_from_saved = int(TARGET_N * RATIO_SAVED)   # 7-8 首來自收藏
+    want_from_rec   = TARGET_N - want_from_saved   # 22-23 首來自推薦
 
-    # 5) 不足用推薦補齊（也做語言過濾）
-    need = 30 - len(chosen_tracks)
-    if need > 0:
-        rec_tracks = fill_with_recommendations(sp, have_ids, mood, need, seed_pool_ids)
-        if allow_langs:
-            rec_tracks = filter_by_language(rec_tracks, allow_langs)
-        chosen_tracks += rec_tracks
-        chosen_tracks = chosen_tracks[:30]
-        have_ids = set(t.get("id") for t in chosen_tracks if t and t.get("id"))
+    # 6) 從收藏中挑符合 mood 的歌
+    chosen_from_saved = pick_with_features(base, feats, mood, k=want_from_saved)
 
-    # 兜底：還是不夠就再用收藏補滿
-    if len(chosen_tracks) < 30 and base:
+    # 7) 用推薦補足 3/4
+    have_ids = set(t.get("id") for t in chosen_from_saved if t and t.get("id"))
+    rec_tracks = fill_with_recommendations(sp, have_ids, mood, want_from_rec, seed_pool_ids)
+    if allow_langs:
+        rec_tracks = filter_by_language(rec_tracks, allow_langs)
+
+    # 8) 合併 + 補滿兜底
+    chosen_tracks = chosen_from_saved + rec_tracks
+    if len(chosen_tracks) < TARGET_N:
         for t in base:
             tid = t.get("id")
             if tid and tid not in have_ids:
-                chosen_tracks.append(t); have_ids.add(tid)
-                if len(chosen_tracks) >= 30: break
+                chosen_tracks.append(t)
+                have_ids.add(tid)
+                if len(chosen_tracks) >= TARGET_N:
+                    break
 
+    # 兜底檢查
     if not chosen_tracks:
-        return ("❌ 你的收藏太少，推薦也補不到合適歌曲。"
-                "請先收藏一些喜歡的歌再試一次。<br><a href='/welcome'>返回</a>")
+        return "❌ 沒有找到合適的歌曲，請多收藏一些歌再試一次。<br><a href='/welcome'>返回</a>"
 
-    # 6) 建歌單 + 批次加入
+    # 9) 建立歌單
     ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     pl_name = f"Mooodyyy — {mood.capitalize()} ({ts} UTC)"
-    pl_desc = "Mood-based playlist powered by Mooodyyy. Have a good vibe! ✨"
+    pl_desc = "Mood-based playlist powered by Mooodyyy 🎧"
     try:
         playlist = sp.user_playlist_create(user=user_id, name=pl_name, public=True, description=pl_desc)
         pl_id = playlist["id"]
@@ -292,6 +297,7 @@ def generate():
     except Exception as e:
         return f"❌ 建立歌單失敗：{e}"
 
+    # 批次加歌
     ids = [t.get("id") for t in chosen_tracks if t and t.get("id")]
     for i in range(0, len(ids), 100):
         try:
@@ -299,20 +305,21 @@ def generate():
         except Exception as e:
             print("⚠️ add_items fail:", e)
 
-    # 7) 回傳結果
-    lang_note = f"（語言：{', '.join(sorted(allow_langs))}）" if allow_langs else ""
+    # 10) 輸出結果頁
     lines = []
     for idx, t in enumerate(chosen_tracks, 1):
         title = t.get("name","")
         artists = ", ".join(a.get("name","") for a in t.get("artists",[]))
         lines.append(f"<li>{idx:02d}. {artists} — {title}</li>")
+
     html = f"""
-    <h3>✅ 已建立 30 首歌單：{pl_name} {lang_note}</h3>
+    <h3>✅ 已建立 30 首歌單：{pl_name}</h3>
     <p><a href="{pl_url}" target="_blank">▶ 在 Spotify 開啟播放清單</a></p>
     <details><summary>查看歌曲清單</summary><ol>{"".join(lines)}</ol></details>
     <p><a href="/welcome">↩︎ 回到情緒選單</a></p>
     """
     return html
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

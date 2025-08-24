@@ -225,8 +225,48 @@ def pick_top_n(tracks, feats, params, n, used_ids=None):
             break
     return out
 
+def _safe_audio_features(sp, ids):
+    """
+    穩健版 audio_features：
+    - 去重
+    - 只保留看起來像 Spotify track 的 22 字元 id
+    - 以批次(<=50)查；若批次失敗（403/400），把批次切成兩半遞迴重試
+    """
+    # 只留 22 長度的字串，避免混到 episode/local/非法 id
+    clean = [i for i in ids if isinstance(i, str) and len(i) == 22]
+    seen = set()
+    clean = [i for i in clean if not (i in seen or seen.add(i))]
+
+    feats = {}
+
+    def fetch_chunk(chunk):
+        if not chunk:
+            return
+        try:
+            res = sp.audio_features(tracks=chunk) or []
+            for f in res:
+                if not f:
+                    continue
+                tid = f.get("id")
+                if tid:
+                    feats[tid] = f
+        except Exception as e:
+            # 批次失敗就切半重試，直到單顆
+            if len(chunk) == 1:
+                print(f"⚠️ audio_features single-id failed: {chunk[0]} -> {e}")
+                return
+            mid = len(chunk) // 2
+            fetch_chunk(chunk[:mid])
+            fetch_chunk(chunk[mid:])
+
+    # 以 50 筆為一批（官方上限 100；保守一點更穩）
+    for i in range(0, len(clean), 50):
+        fetch_chunk(clean[i:i+50])
+
+    return feats
 
 def audio_features_map(sp, track_ids):
+    # 先把 cache 裡有的拿出來
     feats = {}
     to_query = []
     for tid in track_ids:
@@ -234,16 +274,18 @@ def audio_features_map(sp, track_ids):
             feats[tid] = CACHE["feat"][tid]
         else:
             to_query.append(tid)
-    for i in range(0, len(to_query), 50):
-        chunk = to_query[i:i + 50]
-        res = sp.audio_features(chunk) or []
-        for f in res:
-            if not f:
-                continue
-            tid = f.get("id")
-            if tid:
-                CACHE["feat"][tid] = f
-                feats[tid] = f
+
+    # 安全起見限制最多查 300 筆（足夠 3+7 流程）
+    to_query = to_query[:300]
+
+    # 用安全批次查
+    fresh = _safe_audio_features(sp, to_query)
+
+    # 寫回 cache
+    for tid, f in fresh.items():
+        CACHE["feat"][tid] = f
+        feats[tid] = f
+
     return feats
 
 
@@ -390,7 +432,16 @@ def recommend():
         params = map_text_to_params(text)
 
         # 一次查 features（省請求）
-        ids = [t.get("id") for t in (user_pool + ext_pool) if t.get("id")]
+        # 只收集看起來像 track 的 id，去重，限量 300
+ids = []
+seen = set()
+for t in (user_pool + ext_pool):
+    tid = t.get("id")
+    if isinstance(tid, str) and len(tid) == 22 and tid not in seen:
+        ids.append(tid)
+        seen.add(tid)
+        if len(ids) >= 300:
+            break
         feats = audio_features_map(sp, ids)
 
         used = set()
@@ -478,7 +529,17 @@ def create_playlist():
     if not user_pool and not ext_pool:
         return "沒有可加入的歌曲。<a href='/recommend'>返回</a>"
 
-    ids = [t.get("id") for t in (user_pool + ext_pool) if t.get("id")]
+    # 只收集看起來像 track 的 id，去重，限量 300
+ids = []
+seen = set()
+for t in (user_pool + ext_pool):
+    tid = t.get("id")
+    if isinstance(tid, str) and len(tid) == 22 and tid not in seen:
+        ids.append(tid)
+        seen.add(tid)
+        if len(ids) >= 300:
+            break
+
     feats = audio_features_map(sp, ids)
 
     used = set()

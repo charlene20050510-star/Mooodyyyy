@@ -5,6 +5,10 @@ from datetime import datetime
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "devsecret")
+SCOPE = "user-library-read user-top-read playlist-modify-public playlist-modify-private"
+
 # ======================================================
 # Flask & Spotify OAuth setup
 # ======================================================
@@ -97,7 +101,6 @@ def map_text_to_params(text):
 # ======================================================
 CACHE = {"feat": {}}
 
-
 def fetch_playlist_tracks(sp, playlist_id, max_n=100):
     """Fetch items from a playlist with resilient market fallbacks."""
     tracks = []
@@ -126,7 +129,107 @@ def fetch_playlist_tracks(sp, playlist_id, max_n=100):
             print(f"⚠️ fetch_playlist_tracks failed ({playlist_id}): {e}")
             break
     return tracks
+# ---------- Collect user / external pools and pick a 3+7 mix ----------
 
+def collect_user_tracks(sp, max_n=150):
+    """抓使用者的常聽/已儲存歌曲，優先常聽。"""
+    pool = []
+    # Top tracks
+    try:
+        tops = sp.current_user_top_tracks(limit=50, time_range="medium_term")
+        for it in (tops or {}).get("items", []):
+            if it and it.get("id"):
+                pool.append(it)
+            if len(pool) >= max_n:
+                return pool[:max_n]
+    except Exception as e:
+        print(f"⚠️ current_user_top_tracks failed: {e}")
+
+    # Saved tracks
+    try:
+        offset = 0
+        while len(pool) < max_n:
+            saved = sp.current_user_saved_tracks(limit=50, offset=offset)
+            items = (saved or {}).get("items", [])
+            if not items:
+                break
+            for it in items:
+                tr = (it or {}).get("track") or {}
+                if tr and tr.get("id"):
+                    pool.append(tr)
+                if len(pool) >= max_n:
+                    break
+            offset += 50
+    except Exception as e:
+        print(f"⚠️ current_user_saved_tracks failed: {e}")
+
+    return pool[:max_n]
+
+
+def collect_external_tracks(sp, max_n=300):
+    """抓外部來源（不依賴固定 ID，避免 404）。"""
+    pool = []
+
+    # Featured playlists（區域自動）
+    try:
+        featured = sp.featured_playlists(country="TW")
+        for pl in (featured or {}).get("playlists", {}).get("items", [])[:8]:
+            pool.extend(fetch_playlist_tracks(sp, pl.get("id"), max_n=80))
+            if len(pool) >= max_n:
+                return pool[:max_n]
+    except Exception as e:
+        print(f"⚠️ featured_playlists failed: {e}")
+
+    # 類別歌單（再補）
+    try:
+        cats = sp.categories(country="TW", limit=6)
+        for c in (cats or {}).get("categories", {}).get("items", []):
+            cps = sp.category_playlists(category_id=c.get("id"), country="TW", limit=3)
+            for pl in (cps or {}).get("playlists", {}).get("items", []):
+                pool.extend(fetch_playlist_tracks(sp, pl.get("id"), max_n=60))
+                if len(pool) >= max_n:
+                    return pool[:max_n]
+    except Exception as e:
+        print(f"⚠️ categories fallback failed: {e}")
+
+    # 最後才試固定 ID（可能 404，但無所謂）
+    public_lists = [
+        "37i9dQZF1DXcBWIGoYBM5M",  # Today's Top Hits
+        "37i9dQZEVXbMDoHDwVN2tF",  # Global Top 50
+        "37i9dQZF1DX4dyzvuaRJ0n",  # Hot Hits Taiwan
+    ]
+    for pid in public_lists:
+        try:
+            pool.extend(fetch_playlist_tracks(sp, pid, max_n=100))
+            if len(pool) >= max_n:
+                break
+        except Exception as e:
+            print(f"⚠️ public playlist fallback failed: {e}")
+
+    return pool[:max_n]
+
+
+def pick_top_n(tracks, feats, params, n, used_ids=None):
+    """從 tracks 用 scoring 挑 n 首，避開 used_ids。"""
+    used_ids = used_ids or set()
+    scored = []
+    for t in tracks:
+        tid = t.get("id")
+        if not tid or tid in used_ids:
+            continue
+        s = score_track(feats.get(tid), params)
+        scored.append((s, t))
+    scored.sort(key=lambda x: x[0])
+    out = []
+    for s, t in scored:
+        tid = t.get("id")
+        if tid in used_ids:
+            continue
+        out.append(t)
+        used_ids.add(tid)
+        if len(out) >= n:
+            break
+    return out
 
 def get_candidate_tracks(sp, max_n=150):
     """Return a pool of tracks from multiple sources (public + featured + user)."""
@@ -221,7 +324,7 @@ def score_track(f, p):
     s += _dist(f.get("energy"), p["target_energy"])  # energy gap
     s += _dist(f.get("valence"), p["target_valence"])  # positivity gap
     tempo = f.get("tempo") or p["target_tempo"]
-    s += min(abs(tempo - p["target_tempo"]) / 60.0, 1.0)  # tempo gap (capped)
+    s += abs(tempo - p["target_tempo"]) / 100.0  # scale to similar magnitude
     if p["prefer_acoustic"]:
         s += (1.0 - (f.get("acousticness") or 0)) * 0.5
     if p["prefer_instrumental"]:
@@ -238,6 +341,11 @@ def select_top(tracks, feats, params, top_n=10):
     scored.sort(key=lambda x: x[0])
     return [t for _, t in scored[:top_n]]
 
+def item_li(i, tr):
+    name = tr.get("name", "Unknown")
+    artists = ", ".join([a.get("name", "") for a in tr.get("artists", [])])
+    url = (tr.get("external_urls") or {}).get("spotify", "#")
+    return f"<li style='margin:8px 0; list-style:none;'>{i:02d}. <a href='{url}' target='_blank' style='color:#1DB954'><strong>{artists}</strong> - {name}</a></li>"
 
 # ======================================================
 # Routes
@@ -265,7 +373,6 @@ def callback():
     except Exception as e:
         print(f"❌ OAuth callback error: {e}")
         return "<h3>Authorization failed.</h3><a href='/'>Try again</a>"
-
 
 @app.route("/welcome")
 def welcome():
@@ -334,36 +441,41 @@ def recommend():
         return redirect(url_for("welcome"))
 
     try:
-        tracks = get_candidate_tracks(sp, max_n=150)
-        if not tracks:
-    return (
-        "<h2>❌ 暫時無法獲取歌曲</h2>"
-        "<p>Spotify API 或權限受限，請稍後再試或到 Spotify 開啟「最近常聽」與「已儲存歌曲」。</p>"
-        "<a href='/welcome'>回首頁</a>"
-    )
+        # 取得兩個來源池：先用自己的，再用外部，避免 404
+        user_pool = collect_user_tracks(sp, max_n=150)
+        ext_pool  = collect_external_tracks(sp, max_n=300)
 
+        if not user_pool and not ext_pool:
+            return (
+                "<h2>❌ 暫時無法獲取歌曲</h2>"
+                "<p>請先重新登入授權（讀取常聽/已儲存），或稍後再試。</p>"
+                "<a href='/welcome'>回首頁</a>"
+            )
 
         t0 = time.time()
         params = map_text_to_params(text)
-        ids = [t.get("id") for t in tracks if t.get("id")]
+
+        # 一次查 features（省請求）
+        ids = [t.get("id") for t in (user_pool + ext_pool) if t.get("id")]
         feats = audio_features_map(sp, ids)
-        top10 = select_top(tracks, feats, params, top_n=10)
+
+        used = set()
+        pick_user = pick_top_n(user_pool, feats, params, n=3, used_ids=used)
+        pick_ext  = pick_top_n(ext_pool,  feats, params, n=7, used_ids=used)
+
+        # 不足互補到 10 首
+        if len(pick_user) + len(pick_ext) < 10:
+            remain = 10 - (len(pick_user) + len(pick_ext))
+            pick_ext += pick_top_n(ext_pool, feats, params, n=remain, used_ids=used)
+        if len(pick_user) + len(pick_ext) < 10:
+            remain = 10 - (len(pick_user) + len(pick_ext))
+            pick_user += pick_top_n(user_pool, feats, params, n=remain, used_ids=used)
+
+        top10 = (pick_user + pick_ext)[:10]
         dt = time.time() - t0
 
-        if not top10:
-            return """
-                <h2>😅 找不到符合的歌曲</h2>
-                <p>換個描述試試看：像是「要有活力的」、「適合讀書的輕音樂」、「失眠的深夜」⋯</p>
-                <a href='/welcome'>重新嘗試</a>
-            """
-
-        def item_li(i, tr):
-            name = tr.get("name", "Unknown")
-            artists = ", ".join([a.get("name", "") for a in tr.get("artists", [])])
-            url = (tr.get("external_urls") or {}).get("spotify", "#")
-            return f"<li style='margin:8px 0; list-style:none;'>{i:02d}. <a href='{url}' target='_blank' style='color:#1DB954'><strong>{artists}</strong> - {name}</a></li>"
-
-            "songs_html = "\n".join(item_li(i + 1, tr) for i, tr in enumerate(top10))
+        # ✅ 這行一定要是一行，不能斷！
+        songs_html = "\n".join(item_li(i + 1, tr) for i, tr in enumerate(top10))
 
         buttons_html = f"""
         <div style='margin: 20px 0;'>
@@ -393,7 +505,7 @@ def recommend():
             <div class='box'>
               <h1>🎯 為你找到了 {len(top10)} 首歌</h1>
               <p><strong>你的情境：</strong>"{text}"</p>
-              <p style='opacity:.85;'>從 {len(tracks)} 首候選歌曲中篩選，耗時 {dt:.1f} 秒</p>
+              <p style='opacity:.85;'>候選來源：{len(user_pool)}（個人） + {len(ext_pool)}（外部） → 耗時 {dt:.1f} 秒｜規則：3（個人）+ 7（外部）</p>
               <h2>🎵 推薦歌單：</h2>
               <ol style='padding-left:0;'>
                 {songs_html}
@@ -407,11 +519,11 @@ def recommend():
         return page
     except Exception as e:
         print(f"❌ recommend error: {e}")
-        return f"""
-            <h2>❌ 系統暫時出錯</h2>
-            <p>錯誤訊息：{str(e)}</p>
-            <a href='/welcome'>回首頁</a>
-        """
+        return (
+            "<h2>❌ 系統暫時出錯</h2>"
+            f"<p>錯誤訊息：{str(e)}</p>"
+            "<a href='/welcome'>回首頁</a>"
+        )
 
 
 @app.route("/create_playlist", methods=["POST"])
@@ -426,21 +538,33 @@ def create_playlist():
         return "參數不完整。<a href='/recommend'>返回</a>"
 
     params = map_text_to_params(text)
-    tracks = get_candidate_tracks(sp, max_n=150)
-    if not tracks:
+
+    user_pool = collect_user_tracks(sp, max_n=150)
+    ext_pool  = collect_external_tracks(sp, max_n=300)
+    if not user_pool and not ext_pool:
         return "沒有可加入的歌曲。<a href='/recommend'>返回</a>"
 
-    ids = [t.get("id") for t in tracks if t.get("id")]
+    ids = [t.get("id") for t in (user_pool + ext_pool) if t.get("id")]
     feats = audio_features_map(sp, ids)
-    top10 = select_top(tracks, feats, params, top_n=10)
-    if not top10:
-        return "沒有可加入的歌曲。<a href='/recommend'>返回</a>"
+
+    used = set()
+    pick_user = pick_top_n(user_pool, feats, params, n=3, used_ids=used)
+    pick_ext  = pick_top_n(ext_pool,  feats, params, n=7, used_ids=used)
+
+    if len(pick_user) + len(pick_ext) < 10:
+        remain = 10 - (len(pick_user) + len(pick_ext))
+        pick_ext += pick_top_n(ext_pool, feats, params, n=remain, used_ids=used)
+    if len(pick_user) + len(pick_ext) < 10:
+        remain = 10 - (len(pick_user) + len(pick_ext))
+        pick_user += pick_top_n(user_pool, feats, params, n=remain, used_ids=used)
+
+    top10 = (pick_user + pick_ext)[:10]
 
     user = sp.current_user()
     user_id = (user or {}).get("id")
     ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     title = f"Mooodyyy · {ts} UTC"
-    desc = f"情境：{text}"
+    desc = f"情境：{text}（3 首來自個人曲庫 + 7 首外部）"
 
     playlist = sp.user_playlist_create(user=user_id, name=title, public=(mode == "public"), description=desc)
     sp.playlist_add_items(playlist_id=playlist["id"], items=[t["id"] for t in top10])

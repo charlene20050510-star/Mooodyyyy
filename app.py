@@ -64,6 +64,24 @@ def recommend():
         </form>
         <p><a href="/welcome">🏠 回首頁</a></p>
         """
+        # 在大眾 Top10 清單 parts.append(...) 後面，加：
+parts.append(f"""
+<form method="POST" action="/create_playlist">
+  <input type="hidden" name="mode" value="public">
+  <input type="hidden" name="text" value="{text}">
+  <button type="submit">➕ 建立「大眾 Top10」歌單到我的 Spotify</button>
+</form>
+""")
+
+# 在我的曲庫 Top10 清單 parts.append(...) 後面，加：
+parts.append(f"""
+<form method="POST" action="/create_playlist">
+  <input type="hidden" name="mode" value="personal">
+  <input type="hidden" name="text" value="{text}">
+  <button type="submit">➕ 建立「我的曲庫 Top10」歌單到我的 Spotify</button>
+</form>
+""")
+
 
     # POST：使用者送出後
     text = (request.form.get("text") or "").strip()
@@ -71,6 +89,102 @@ def recommend():
         return "請輸入一句話描述情境。<br><a href='/recommend'>返回</a>"
 
     return f"<h3>你剛剛輸入的文字：</h3><p>{text}</p><p><a href='/recommend'>↩︎ 再試一次</a></p>"
+
+@app.route("/create_playlist", methods=["POST"])
+def create_playlist():
+    # 1) 權限與參數
+    if "access_token" not in session:
+        return redirect(url_for("home"))
+    sp = spotipy.Spotify(auth=session["access_token"])
+
+    mode = (request.form.get("mode") or "").strip()      # "public" 或 "personal"
+    text = (request.form.get("text") or "").strip()
+    if mode not in ("public", "personal") or not text:
+        return "參數不完整。<a href='/recommend'>返回</a>"
+
+    # 2) 把文字轉成音樂參數（你前面已經貼過 map_text_to_params）
+    params = map_text_to_params(text)
+
+    # 3) 準備候選歌曲
+    tracks = []
+    if mode == "public":
+        # 用 Spotify 官方 Global Top 50 歌單（或用你的環境變數覆蓋）
+        top_id = os.environ.get("GLOBAL_TOP_PLAYLIST_ID", "37i9dQZEVXbMDoHDwVN2tF")
+        tracks = fetch_playlist_tracks(sp, top_id, max_n=150)
+    else:  # personal
+        # 抓你按過 ❤️ 的 Liked Songs（最多 300 首）
+        saved_ids, offset = [], 0
+        while len(saved_ids) < 300:
+            try:
+                batch = sp.current_user_saved_tracks(limit=50, offset=offset)
+            except Exception as e:
+                print("⚠️ saved_tracks fail:", e); break
+            items = batch.get("items", [])
+            if not items: break
+            for it in items:
+                tr = (it or {}).get("track") or {}
+                tid = tr.get("id")
+                if tid: saved_ids.append(tid)
+            if not batch.get("next"): break
+            offset += 50
+
+        if not saved_ids:
+            return "你的曲庫目前沒有收藏歌曲，無法建立個人歌單。<a href='/recommend'>返回</a>"
+
+        # 轉回完整 track 物件
+        for i in range(0, len(saved_ids), 50):
+            chunk = saved_ids[i:i+50]
+            try:
+                resp = sp.tracks(chunk)
+                tracks.extend(resp.get("tracks", []))
+            except Exception as e:
+                print("⚠️ tracks fail:", e)
+
+    if not tracks:
+        return "找不到候選歌曲，無法建立歌單。<a href='/recommend'>返回</a>"
+
+    # 4) 取出音樂特徵並評分，挑前 10
+    ids = [t.get("id") for t in tracks if t.get("id")]
+    feats = audio_features_map(sp, ids)
+    top10 = select_top(tracks, feats, params, top_n=10)
+
+    if not top10:
+        return "沒有符合條件的歌曲。<a href='/recommend'>返回</a>"
+
+    # 5) 建立 Spotify 歌單 + 加入歌曲
+    user_id = sp.current_user()["id"]
+    from datetime import datetime
+    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+    title = f"Mooodyyy · {('大眾Top10' if mode=='public' else '我的曲庫Top10')} · {ts} UTC"
+    desc = f"情境：{text} ｜ 參數：energy {params['target_energy']}, valence {params['target_valence']}, tempo {params['target_tempo']}"
+
+    # public 模式設公開，personal 設私人（你可以反過來，隨你）
+    is_public = True if mode == "public" else False
+    playlist = sp.user_playlist_create(user=user_id, name=title, public=is_public, description=desc)
+
+    track_ids = [t["id"] for t in top10 if t.get("id")]
+    # 一次最多 100 首，這裡只有 10 首，直接加
+    sp.playlist_add_items(playlist_id=playlist["id"], items=track_ids)
+
+    playlist_url = (playlist.get("external_urls") or {}).get("spotify", "#")
+
+    # 6) 回應頁面
+    items_html = []
+    for i, t in enumerate(top10, 1):
+        nm = t.get("name", "")
+        artists = ", ".join(a.get("name","") for a in t.get("artists",[]))
+        url = (t.get("external_urls") or {}).get("spotify","#")
+        items_html.append(f"<li>{i:02d}. <a href='{url}' target='_blank'>{artists} — {nm}</a></li>")
+
+    return f"""
+    <h2>✅ 成功建立歌單！</h2>
+    <p>歌單：<a href="{playlist_url}" target="_blank">{title}</a></p>
+    <p>模式：{"大眾 Top10" if mode=="public" else "我的曲庫 Top10"}</p>
+    <p>情境：{text}</p>
+    <h3>曲目：</h3>
+    <ol>{''.join(items_html)}</ol>
+    <p><a href="/recommend">↩︎ 回推薦頁</a> ｜ <a href="/welcome">🏠 回首頁</a></p>
+    """
 
 
 # （除錯用；需要時保留）

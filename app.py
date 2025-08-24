@@ -267,6 +267,7 @@ def callback():
         return "<h3>Authorization failed.</h3><a href='/'>Try again</a>"
 
 
+
 @app.route("/welcome")
 def welcome():
     sp = get_spotify_client()

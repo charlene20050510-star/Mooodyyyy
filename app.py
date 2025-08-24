@@ -12,12 +12,6 @@ SCOPE = "user-library-read user-top-read playlist-modify-public playlist-modify-
 # ======================================================
 # Flask & Spotify OAuth setup
 # ======================================================
-app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "devsecret")
-
-# Add user-top-read to allow using user's top tracks as fallback
-SCOPE = "user-library-read user-top-read playlist-modify-public playlist-modify-private"
-
 
 def oauth():
     """Create a SpotifyOAuth instance. Redirect URI must exactly match Spotify Dashboard."""
@@ -230,66 +224,6 @@ def pick_top_n(tracks, feats, params, n, used_ids=None):
         if len(out) >= n:
             break
     return out
-
-def get_candidate_tracks(sp, max_n=150):
-    """Return a pool of tracks from multiple sources (public + featured + user)."""
-    pool = []
-
-    # 1) Known public playlists (region may vary)
-    public_lists = [
-        "37i9dQZF1DXcBWIGoYBM5M",  # Today's Top Hits
-        "37i9dQZEVXbMDoHDwVN2tF",  # Global Top 50
-        "37i9dQZF1DX4dyzvuaRJ0n",  # Hot Hits Taiwan (example)
-    ]
-    for pid in public_lists:
-        try:
-            tr = fetch_playlist_tracks(sp, pid, max_n=100)
-            pool.extend(tr)
-            if len(pool) >= max_n:
-                return pool[:max_n]
-        except Exception as e:
-            print(f"⚠️ public playlist fallback failed: {e}")
-
-    # 2) Spotify featured playlists (region-aware)
-    try:
-        featured = sp.featured_playlists(country="TW")
-        for pl in (featured or {}).get("playlists", {}).get("items", [])[:5]:
-            pool.extend(fetch_playlist_tracks(sp, pl.get("id"), max_n=60))
-            if len(pool) >= max_n:
-                return pool[:max_n]
-    except Exception as e:
-        print(f"⚠️ featured_playlists failed: {e}")
-
-    # 3) User top tracks (needs user-top-read)
-    try:
-        tops = sp.current_user_top_tracks(limit=50, time_range="medium_term")
-        for it in (tops or {}).get("items", []):
-            if it and it.get("id"):
-                pool.append(it)
-        if len(pool) >= max_n:
-            return pool[:max_n]
-    except Exception as e:
-        print(f"⚠️ current_user_top_tracks failed: {e}")
-
-    # 4) User saved tracks
-    try:
-        offset = 0
-        while len(pool) < max_n:
-            saved = sp.current_user_saved_tracks(limit=50, offset=offset)
-            items = (saved or {}).get("items", [])
-            if not items:
-                break
-            for it in items:
-                tr = (it or {}).get("track") or {}
-                if tr and tr.get("id"):
-                    pool.append(tr)
-                if len(pool) >= max_n:
-                    break
-            offset += 50
-    except Exception as e:
-        print(f"⚠️ current_user_saved_tracks failed: {e}")
-
-    return pool[:max_n]
 
 
 def audio_features_map(sp, track_ids):

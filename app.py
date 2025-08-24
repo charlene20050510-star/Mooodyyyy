@@ -82,7 +82,6 @@ parts.append(f"""
 </form>
 """)
 
-
     # POST：使用者送出後
     text = (request.form.get("text") or "").strip()
     if not text:

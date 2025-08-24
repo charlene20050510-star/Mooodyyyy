@@ -1,3 +1,5 @@
+from openai import OpenAI
+
 from flask import Flask, request, redirect, session, url_for
 import os, random, re
 from datetime import datetime
@@ -5,6 +7,7 @@ import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
 app = Flask(__name__)
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 app.secret_key = os.environ.get("SECRET_KEY", "devsecret")
 
 # 權限：讀取歌庫 + 建立/修改歌單
@@ -201,124 +204,65 @@ def fill_with_recommendations(sp, have_ids, mood, target_n, seed_pool_ids):
 # ---------- 登入後主頁 ----------
 @app.route("/welcome")
 def welcome():
-    sp = get_sp()
-    if not sp:
+    if "access_token" not in session:
         return redirect(url_for("home"))
-    try:
-        me = sp.current_user()
-        name = me.get("display_name") or "there"
-    except Exception as e:
-        return f"Token 失效或 Spotify 連線失敗，請回首頁重新登入。<br><a href='/'>回首頁</a>"
+    sp = spotipy.Spotify(auth=session["access_token"])
+    me = sp.current_user()
+    name = me["display_name"]
 
+    # 直接顯示 embedding 的表單
     html = f"""
     <h2>Hello {name} 🎶</h2>
-    <p>選擇你的情緒（可在網址加語言：<code>&lang=zh&lang=en</code>）：</p>
-    <ul>
-      <li><a href="/generate?mood=happy">🌞 Happy</a></li>
-      <li><a href="/generate?mood=chill">🌙 Chill</a></li>
-      <li><a href="/generate?mood=focus">🎯 Focus</a></li>
-      <li><a href="/generate?mood=sad">🌧️ Sad</a></li>
-    </ul>
+    <p>輸入一段文字情境，我會幫你轉成向量（embedding）：</p>
+    <form action="/embed" method="post">
+        <textarea name="text" rows="4" cols="50" placeholder="例如：凌晨三點還不想睡"></textarea><br><br>
+        <button type="submit">轉換</button>
+    </form>
     """
     return html
 
 # ---------- 產生 30 首歌單 ----------
-@app.route("/generate")
-def generate():
-    sp = get_sp()
-    if not sp:
-        return redirect(url_for("home"))
+@app.route("/embed", methods=["GET", "POST"])
+def embed():
+    if request.method == "POST":
+        text = request.form.get("text")
+        if not text:
+            return "請輸入一段文字情境！<br><a href='/embed'>返回</a>"
 
-    # 1) 讀取 mood 與語言參數
-    mood = (request.args.get("mood") or "chill").lower()
-    allow_langs = set(request.args.getlist("lang"))  # 例：?lang=zh&lang=en
-
-    # 2) 使用者資訊
-    try:
-        me = sp.current_user()
-        user_id = me["id"]
-    except Exception:
-        return "❌ Spotify 連線失敗，請回首頁重新登入。<br><a href='/'>回首頁</a>"
-
-    # 3) 撈收藏歌曲
-    saved_ids = fetch_saved_track_ids(sp, max_n=400)
-    if not saved_ids:
-        return "❌ 你還沒有收藏任何歌曲，請先去 Spotify 收藏一些再試一次。<br><a href='/welcome'>返回</a>"
-
-    seed_pool_ids = saved_ids[:]
-    saved_tracks = fetch_tracks_by_ids(sp, saved_ids)
-    feats = fetch_audio_features(sp, saved_ids)
-
-    # 4) 語言過濾 + 多樣化處理
-    base = saved_tracks
-    if allow_langs:
-        base = filter_by_language(base, allow_langs)
-    random.shuffle(base)
-    base = diversify_by_artist(base, max_per_artist=2)
-
-    # 5) 選曲比例設定
-    TARGET_N = 30
-    RATIO_SAVED = 0.25
-    want_from_saved = int(TARGET_N * RATIO_SAVED)   # 7-8 首來自收藏
-    want_from_rec   = TARGET_N - want_from_saved   # 22-23 首來自推薦
-
-    # 6) 從收藏中挑符合 mood 的歌
-    chosen_from_saved = pick_with_features(base, feats, mood, k=want_from_saved)
-
-    # 7) 用推薦補足 3/4
-    have_ids = set(t.get("id") for t in chosen_from_saved if t and t.get("id"))
-    rec_tracks = fill_with_recommendations(sp, have_ids, mood, want_from_rec, seed_pool_ids)
-    if allow_langs:
-        rec_tracks = filter_by_language(rec_tracks, allow_langs)
-
-    # 8) 合併 + 補滿兜底
-    chosen_tracks = chosen_from_saved + rec_tracks
-    if len(chosen_tracks) < TARGET_N:
-        for t in base:
-            tid = t.get("id")
-            if tid and tid not in have_ids:
-                chosen_tracks.append(t)
-                have_ids.add(tid)
-                if len(chosen_tracks) >= TARGET_N:
-                    break
-
-    # 兜底檢查
-    if not chosen_tracks:
-        return "❌ 沒有找到合適的歌曲，請多收藏一些歌再試一次。<br><a href='/welcome'>返回</a>"
-
-    # 9) 建立歌單
-    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-    pl_name = f"Mooodyyy — {mood.capitalize()} ({ts} UTC)"
-    pl_desc = "Mood-based playlist powered by Mooodyyy 🎧"
-    try:
-        playlist = sp.user_playlist_create(user=user_id, name=pl_name, public=True, description=pl_desc)
-        pl_id = playlist["id"]
-        pl_url = playlist["external_urls"]["spotify"]
-    except Exception as e:
-        return f"❌ 建立歌單失敗：{e}"
-
-    # 批次加歌
-    ids = [t.get("id") for t in chosen_tracks if t and t.get("id")]
-    for i in range(0, len(ids), 100):
         try:
-            sp.playlist_add_items(pl_id, ids[i:i+100])
+            # 呼叫 OpenAI 產生 embedding
+            response = client.embeddings.create(
+                model="text-embedding-3-small",
+                input=text
+            )
+            embedding = response.data[0].embedding
         except Exception as e:
-            print("⚠️ add_items fail:", e)
+            return f"❌ 呼叫 OpenAI 失敗：{e}<br><a href='/embed'>返回</a>"
 
-    # 10) 輸出結果頁
-    lines = []
-    for idx, t in enumerate(chosen_tracks, 1):
-        title = t.get("name","")
-        artists = ", ".join(a.get("name","") for a in t.get("artists",[]))
-        lines.append(f"<li>{idx:02d}. {artists} — {title}</li>")
+        # 顯示結果（避免太長，只秀前 10 個值）
+        preview = ", ".join(f"{x:.6f}" for x in embedding[:10])
+        return f"""
+        <h2>輸入文字：</h2>
+        <p>{text}</p>
+        <h2>Embedding 向量</h2>
+        <p>維度：{len(embedding)}</p>
+        <p>前 10 個數值：</p>
+        <code>[{preview}]</code>
+        <br><br>
+        <a href="/embed">↩️ 再試一次</a>
+        <br><a href="/welcome">🏠 回首頁</a>
+        """
 
-    html = f"""
-    <h3>✅ 已建立 30 首歌單：{pl_name}</h3>
-    <p><a href="{pl_url}" target="_blank">▶ 在 Spotify 開啟播放清單</a></p>
-    <details><summary>查看歌曲清單</summary><ol>{"".join(lines)}</ol></details>
-    <p><a href="/welcome">↩︎ 回到情緒選單</a></p>
+    # GET 時回傳輸入表單
+    return """
+        <h2>輸入情境文字，轉成向量（embedding）</h2>
+        <form method="post">
+          <textarea name="text" rows="4" cols="60" placeholder="例如：凌晨三點還不想睡"></textarea><br><br>
+          <button type="submit">產生 Embedding</button>
+        </form>
+        <p><a href="/welcome">🏠 回首頁</a></p>
     """
-    return html
+
 
 
 if __name__ == "__main__":

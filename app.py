@@ -11,7 +11,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "devsecret")
 
 # Spotify scopes: read library (optional), create/modify playlists (required)
-SCOPE = "user-library-read playlist-modify-public playlist-modify-private"
+SCOPE = "user-library-read user-top-read playlist-modify-public playlist-modify-private"
 
 # ---------------------------
 # OAuth helpers
@@ -102,11 +102,17 @@ CACHE = {"feat": {}}
 
 
 def fetch_playlist_tracks(sp: spotipy.Spotify, playlist_id: str, max_n: int = 100):
+    """Fetch items from a public playlist, with resilient market fallbacks."""
     tracks = []
     offset = 0
+    market_trials = [None, "from_token", "TW", "US"]
     while len(tracks) < max_n:
         try:
-            batch = sp.playlist_items(playlist_id, offset=offset, limit=50, market="from_token")
+            market = market_trials[min(offset // 200, len(market_trials)-1)]  # change market after a couple pages
+            kwargs = {"limit": 50, "offset": offset}
+            if market is not None:
+                kwargs["market"] = market
+            batch = sp.playlist_items(playlist_id, **kwargs)
             items = (batch or {}).get("items", [])
             if not items:
                 break
@@ -120,10 +126,7 @@ def fetch_playlist_tracks(sp: spotipy.Spotify, playlist_id: str, max_n: int = 10
                 break
             offset += 50
         except Exception as e:
-            print(f"⚠️ fetch_playlist_tracks failed: {e}")
-            # Fallback to Today's Top Hits once
-            if playlist_id != "37i9dQZF1DXcBWIGoYBM5M":
-                return fetch_playlist_tracks(sp, "37i9dQZF1DXcBWIGoYBM5M", max_n)
+            print(f"⚠️ fetch_playlist_tracks failed ({playlist_id}): {e}")
             break
     return tracks
 
@@ -177,6 +180,66 @@ def select_top(tracks: list[dict], feats: dict, params: dict, top_n: int = 10):
     scored.sort(key=lambda x: x[0])
     return [t for _, t in scored[:top_n]]
 
+
+def get_candidate_tracks(sp: spotipy.Spotify, max_n: int = 150):
+    """Return a pool of tracks from several resilient sources."""
+    pool: list[dict] = []
+
+    # 1) Known global playlists (may rotate regionally)
+    public_lists = [
+        "37i9dQZF1DXcBWIGoYBM5M",  # Today's Top Hits
+        "37i9dQZEVXbMDoHDwVN2tF",  # Global Top 50
+        "37i9dQZF1DX4dyzvuaRJ0n",  # Hot Hits Taiwan (example; may vary)
+    ]
+    for pid in public_lists:
+        try:
+            tr = fetch_playlist_tracks(sp, pid, max_n=100)
+            pool.extend(tr)
+            if len(pool) >= max_n:
+                return pool[:max_n]
+        except Exception as e:
+            print(f"⚠️ public playlist fallback failed: {e}")
+
+    # 2) Spotify featured playlists (region-aware)
+    try:
+        featured = sp.featured_playlists(country="TW")
+        for pl in (featured or {}).get("playlists", {}).get("items", [])[:5]:
+            pool.extend(fetch_playlist_tracks(sp, pl.get("id"), max_n=60))
+            if len(pool) >= max_n:
+                return pool[:max_n]
+    except Exception as e:
+        print(f"⚠️ featured_playlists failed: {e}")
+
+    # 3) User top tracks
+    try:
+        tops = sp.current_user_top_tracks(limit=50, time_range="medium_term")
+        for it in (tops or {}).get("items", []):
+            if it and it.get("id"):
+                pool.append(it)
+        if len(pool) >= max_n:
+            return pool[:max_n]
+    except Exception as e:
+        print(f"⚠️ current_user_top_tracks failed: {e}")
+
+    # 4) User saved tracks
+    try:
+        offset = 0
+        while len(pool) < max_n:
+            saved = sp.current_user_saved_tracks(limit=50, offset=offset)
+            items = (saved or {}).get("items", [])
+            if not items:
+                break
+            for it in items:
+                tr = (it or {}).get("track") or {}
+                if tr and tr.get("id"):
+                    pool.append(tr)
+                if len(pool) >= max_n:
+                    break
+            offset += 50
+    except Exception as e:
+        print(f"⚠️ current_user_saved_tracks failed: {e}")
+
+    return pool[:max_n]
 
 # ---------------------------
 # Routes
@@ -275,19 +338,14 @@ def recommend():
 
     try:
         # Candidate source playlists (can add more)
-        candidate_playlists = [
-            "37i9dQZF1DXcBWIGoYBM5M",  # Today's Top Hits
-            "37i9dQZEVXbMDoHDwVN2tF",  # Global Top 50
-        ]
-
-        tracks = []
-        for pid in candidate_playlists:
-            tracks = fetch_playlist_tracks(sp, pid, max_n=100)
-            if tracks:
-                break
-
+                # Build a resilient candidate pool
+        tracks = get_candidate_tracks(sp, max_n=150)
         if not tracks:
             return """
+                <h2>❌ 暫時無法獲取歌曲</h2>
+                <p>Spotify API 或權限受限，請稍後再試或到 Spotify 開啟「最近常聽」與「已儲存歌曲」。</p>
+                <a href='/welcome'>回首頁</a>
+            """ """
                 <h2>❌ 暫時無法獲取歌曲</h2>
                 <p>Spotify API 似乎暫時不可用，請稍後再試。</p>
                 <a href='/welcome'>回首頁</a>
@@ -378,16 +436,7 @@ def create_playlist():
 
     # Recompute same Top 10 for consistency with the shown list
     params = map_text_to_params(text)
-    candidate_playlists = [
-        "37i9dQZF1DXcBWIGoYBM5M",
-        "37i9dQZEVXbMDoHDwVN2tF",
-    ]
-
-    tracks = []
-    for pid in candidate_playlists:
-        tracks = fetch_playlist_tracks(sp, pid, max_n=100)
-        if tracks:
-            break
+        tracks = get_candidate_tracks(sp, max_n=150)
     if not tracks:
         return "沒有可加入的歌曲。<a href='/recommend'>返回</a>"
 
@@ -442,4 +491,5 @@ def env_show():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    PORT = int(os.environ.get("PORT", "5000"))
+    app.run(host="0.0.0.0", port=PORT)

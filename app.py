@@ -336,11 +336,12 @@ def recommend():
     try:
         tracks = get_candidate_tracks(sp, max_n=150)
         if not tracks:
-            return """
-                <h2>❌ 暫時無法獲取歌曲</h2>
-                <p>Spotify API 或權限受限，請稍後再試或到 Spotify 開啟「最近常聽」與「已儲存歌曲」。</p>
-                <a href='/welcome'>回首頁</a>
-            """
+    return (
+        "<h2>❌ 暫時無法獲取歌曲</h2>"
+        "<p>Spotify API 或權限受限，請稍後再試或到 Spotify 開啟「最近常聽」與「已儲存歌曲」。</p>"
+        "<a href='/welcome'>回首頁</a>"
+    )
+
 
         t0 = time.time()
         params = map_text_to_params(text)
@@ -362,8 +363,7 @@ def recommend():
             url = (tr.get("external_urls") or {}).get("spotify", "#")
             return f"<li style='margin:8px 0; list-style:none;'>{i:02d}. <a href='{url}' target='_blank' style='color:#1DB954'><strong>{artists}</strong> - {name}</a></li>"
 
-        songs_html = "
-".join(item_li(i + 1, tr) for i, tr in enumerate(top10))
+            "songs_html = "\n".join(item_li(i + 1, tr) for i, tr in enumerate(top10))
 
         buttons_html = f"""
         <div style='margin: 20px 0;'>

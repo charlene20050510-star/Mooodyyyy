@@ -417,6 +417,7 @@ def recommend():
         return redirect(url_for("welcome"))
 
     try:
+        # 收集候選池
         user_pool = collect_user_tracks(sp, max_n=150)
         ext_pool  = collect_external_tracks(sp, max_n=300)
 
@@ -427,12 +428,12 @@ def recommend():
                 "<a href='/welcome'>回首頁</a>"
             )
 
+        # 開始推薦
         t0 = time.time()
         params = map_text_to_params(text)
 
-        # 只收集看起來像 track 的 id，去重，限量 300
-        ids = []
-        seen = set()
+        # 收集有效 track id，最多 300
+        ids, seen = [], set()
         for t in (user_pool + ext_pool):
             tid = t.get("id")
             if isinstance(tid, str) and len(tid) == 22 and tid not in seen:
@@ -443,62 +444,163 @@ def recommend():
 
         feats = audio_features_map(sp, ids)
 
+        # ===== 3 熟悉 + 7 新鮮（不硬塞）基本版 =====
         used = set()
-        pick_user = pick_top_n(user_pool, feats, params, n=3, used_ids=used)
-        pick_ext  = pick_top_n(ext_pool,  feats, params, n=7, used_ids=used)
 
-        if len(pick_user) + len(pick_ext) < 10:
-            remain = 10 - (len(pick_user) + len(pick_ext))
-            pick_ext += pick_top_n(ext_pool, feats, params, n=remain, used_ids=used)
-        if len(pick_user) + len(pick_ext) < 10:
-            remain = 10 - (len(pick_user) + len(pick_ext))
-            pick_user += pick_top_n(user_pool, feats, params, n=remain, used_ids=used)
+        user_all_ids = {
+            t.get("id") for t in user_pool
+            if isinstance(t.get("id"), str) and len(t.get("id")) == 22
+        }
 
-        top10 = (pick_user + pick_ext)[:10]
+        def _safe_artist_id(tr):
+            a = tr.get("artists") or tr.get("artist") or []
+            if isinstance(a, list) and a:
+                first = a[0]
+                return first.get("id") if isinstance(first, dict) else None
+            if isinstance(a, dict):
+                return a.get("id")
+            return None
+
+        # 1) 你的曲庫：先挑最多 10 首候選，再取前 3 當熟悉基底
+        user_candidates = pick_top_n(user_pool, feats, params, n=10, used_ids=set())
+
+        anchors = []
+        for tr in user_candidates:
+            tid = tr.get("id")
+            if not isinstance(tid, str) or len(tid) != 22: 
+                continue
+            if tid in used: 
+                continue
+            tr["source"] = "user"
+            anchors.append(tr)
+            used.add(tid)
+            if len(anchors) >= 3:
+                break  # 不足就少於 3，不硬塞
+
+        # 2) 外部候選：抓較大池做多樣性/新鮮度過濾
+        ext_candidates = pick_top_n(ext_pool, feats, params, n=50, used_ids=set())
+
+        ext_chosen, seen_artists = [], set()
+        # 2a) 嚴格新鮮：排除你曲庫已有 + 同歌手抑制
+        for tr in ext_candidates:
+            tid = tr.get("id")
+            if not isinstance(tid, str) or len(tid) != 22: 
+                continue
+            if tid in used or tid in user_all_ids: 
+                continue
+            aid = _safe_artist_id(tr)
+            if aid and aid in seen_artists: 
+                continue
+            seen_artists.add(aid)
+            tr["source"] = "external"
+            ext_chosen.append(tr)
+            used.add(tid)
+            if len(ext_chosen) >= 7:
+                break
+
+        # 2b) 若還不滿 7，放寬：可含你曲庫有的，但仍避免重複/洗版
+        if len(ext_chosen) < 7:
+            for tr in ext_candidates:
+                if len(ext_chosen) >= 7:
+                    break
+                tid = tr.get("id")
+                if not isinstance(tid, str) or len(tid) != 22:
+                    continue
+                if tid in used:
+                    continue
+                aid = _safe_artist_id(tr)
+                if aid and aid in seen_artists:
+                    continue
+                seen_artists.add(aid)
+                tr["source"] = "external"
+                ext_chosen.append(tr)
+                used.add(tid)
+
+        # 3) 混合 + 補齊到 10
+        mixed = anchors + ext_chosen
+
+        if len(mixed) < 10:
+            for tr in ext_candidates:
+                if len(mixed) >= 10:
+                    break
+                tid = tr.get("id")
+                if not isinstance(tid, str) or len(tid) != 22 or tid in used:
+                    continue
+                tr["source"] = "external"
+                mixed.append(tr)
+                used.add(tid)
+
+        if len(mixed) < 10:
+            for tr in user_candidates:
+                if len(mixed) >= 10:
+                    break
+                tid = tr.get("id")
+                if not isinstance(tid, str) or len(tid) != 22 or tid in used:
+                    continue
+                tr["source"] = "user"
+                mixed.append(tr)
+                used.add(tid)
+
+        top10 = mixed[:10]
         dt = time.time() - t0
 
+        # === 預覽模式 or 自動建立私人歌單 ===
         songs_html = "\n".join(item_li(i + 1, tr) for i, tr in enumerate(top10))
+        preview = (request.args.get("preview") or request.form.get("preview") or "").strip()
 
-        buttons_html = f"""
-        <div style='margin: 20px 0;'>
-          <form method='POST' action='/create_playlist' style='display:inline; margin-right:10px;'>
-            <input type='hidden' name='mode' value='public'>
-            <input type='hidden' name='text' value='{text}'>
-            <button type='submit' style='background:#1DB954; color:#fff; border:none; padding:10px 20px; border-radius:6px;'>➕ 建立公開歌單</button>
-          </form>
-          <form method='POST' action='/create_playlist' style='display:inline;'>
-            <input type='hidden' name='mode' value='private'>
-            <input type='hidden' name='text' value='{text}'>
-            <button type='submit' style='background:#FF6B6B; color:#fff; border:none; padding:10px 20px; border-radius:6px;'>➕ 建立私人歌單</button>
-          </form>
-        </div>
-        """
-
-        page = f"""
-        <!DOCTYPE html><html><head><meta charset='UTF-8'><title>推薦結果 - Mooodyyy</title>
-        <style>
-          body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:linear-gradient(135deg,#1DB954,#1ed760); color:#fff; margin:0; padding:20px; }}
-          .container {{ max-width:720px; margin:0 auto; }}
-          .box {{ background:rgba(255,255,255,0.1); border-radius:16px; padding:28px; backdrop-filter:blur(10px); }}
-          a {{ color:#fff; }}
-        </style></head>
-        <body>
-          <div class='container'>
-            <div class='box'>
-              <h1>🎯 為你找到了 {len(top10)} 首歌</h1>
-              <p><strong>你的情境：</strong>"{text}"</p>
-              <p style='opacity:.85;'>候選來源：{len(user_pool)}（個人） + {len(ext_pool)}（外部） → 耗時 {dt:.1f} 秒｜規則：3（個人）+ 7（外部）</p>
-              <h2>🎵 推薦歌單：</h2>
-              <ol style='padding-left:0;'>
-                {songs_html}
-              </ol>
-              {buttons_html}
-              <p style='margin-top:24px;'><a href='/welcome'>↩️ 回首頁</a> | <a href='/recommend'>🔄 再試一次</a></p>
+        if preview == "1":
+            # 預覽：顯示結果 + 兩顆按鈕
+            buttons_html = f"""
+            <div style='margin: 20px 0;'>
+              <form method='POST' action='/create_playlist' style='display:inline; margin-right:10px;'>
+                <input type='hidden' name='mode' value='private'>
+                <input type='hidden' name='text' value='{text}'>
+                <button type='submit' style='background:#333; color:#fff; border:none; padding:10px 20px; border-radius:6px;'>➕ 存成「私人歌單」</button>
+              </form>
+              <form method='POST' action='/create_playlist' style='display:inline;'>
+                <input type='hidden' name='mode' value='public'>
+                <input type='hidden' name='text' value='{text}'>
+                <button type='submit' style='background:#1DB954; color:#fff; border:none; padding:10px 20px; border-radius:6px;'>➕ 存成「公開歌單」</button>
+              </form>
             </div>
-          </div>
-        </body></html>
-        """
-        return page
+            """
+            page = f"""
+            <html><head><meta charset='utf-8'><title>推薦結果（預覽）</title></head>
+            <body>
+              <div style='max-width:800px;margin:24px auto;font-family:sans-serif;'>
+                <h1>🎯 為你找到了 {len(top10)} 首歌</h1>
+                <p><strong>你的情境：</strong>"{text}"</p>
+                <p style='opacity:.85;'>候選來源：{len(user_pool)}（個人） + {len(ext_pool)}（外部） → 耗時 {dt:.1f} 秒｜規則：最多 3（個人）+ 至多 7（外部）</p>
+                <h2>🎵 推薦歌單：</h2>
+                <ol style='padding-left:0;'>
+                  {songs_html}
+                </ol>
+                {buttons_html}
+                <p style='margin-top:24px;'><a href='/welcome'>↩️ 回首頁</a> | <a href='/recommend'>🔄 再試一次</a></p>
+              </div>
+            </body></html>
+            """
+            return page
+
+        # 預設：直接建立「私人」歌單並導去 Spotify
+        user = sp.current_user()
+        user_id = (user or {}).get("id")
+
+        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+        title = f"Mooodyyy · {ts} UTC"
+        desc  = f"情境：{text}（最多 3 首來自個人曲庫 + 其餘外部）"
+
+        playlist = sp.user_playlist_create(
+            user=user_id,
+            name=title,
+            public=False,  # 固定私人
+            description=desc
+        )
+        sp.playlist_add_items(playlist_id=playlist["id"], items=[t["id"] for t in top10])
+
+        url = (playlist.get("external_urls") or {}).get("spotify", "#")
+        return redirect(url)
+
     except Exception as e:
         print(f"❌ recommend error: {e}")
         return (
@@ -506,77 +608,6 @@ def recommend():
             f"<p>錯誤訊息：{str(e)}</p>"
             "<a href='/welcome'>回首頁</a>"
         )
-
-
-@app.route("/create_playlist", methods=["POST"])
-def create_playlist():
-    sp = get_spotify_client()
-    if not sp:
-        return redirect(url_for("home"))
-
-    mode = (request.form.get("mode") or "private").strip()
-    text = (request.form.get("text") or "").strip()
-    if not text or mode not in ("public", "private"):
-        return "參數不完整。<a href='/recommend'>返回</a>"
-
-    params = map_text_to_params(text)
-
-    user_pool = collect_user_tracks(sp, max_n=150)
-    ext_pool  = collect_external_tracks(sp, max_n=300)
-    if not user_pool and not ext_pool:
-        return "沒有可加入的歌曲。<a href='/recommend'>返回</a>"
-
-    # 只收集看起來像 track 的 id，去重，限量 300
-    ids = []
-    seen = set()
-    for t in (user_pool + ext_pool):
-        tid = t.get("id")
-        if isinstance(tid, str) and len(tid) == 22 and tid not in seen:
-            ids.append(tid)
-            seen.add(tid)
-            if len(ids) >= 300:
-                break
-
-    feats = audio_features_map(sp, ids)
-
-    used = set()
-    pick_user = pick_top_n(user_pool, feats, params, n=3, used_ids=used)
-    pick_ext  = pick_top_n(ext_pool,  feats, params, n=7, used_ids=used)
-
-    if len(pick_user) + len(pick_ext) < 10:
-        remain = 10 - (len(pick_user) + len(pick_ext))
-        pick_ext += pick_top_n(ext_pool, feats, params, n=remain, used_ids=used)
-    if len(pick_user) + len(pick_ext) < 10:
-        remain = 10 - (len(pick_user) + len(pick_ext))
-        pick_user += pick_top_n(user_pool, feats, params, n=remain, used_ids=used)
-
-    top10 = (pick_user + pick_ext)[:10]
-
-    user = sp.current_user()
-    user_id = (user or {}).get("id")
-    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-    title = f"Mooodyyy · {ts} UTC"
-    desc = f"情境：{text}（3 首來自個人曲庫 + 7 首外部）"
-
-    playlist = sp.user_playlist_create(user=user_id, name=title, public=(mode == "public"), description=desc)
-    sp.playlist_add_items(playlist_id=playlist["id"], items=[t["id"] for t in top10])
-    url = (playlist.get("external_urls") or {}).get("spotify", "#")
-
-    items_html = []
-    for i, tr in enumerate(top10, 1):
-        nm = tr.get("name", "")
-        artists = ", ".join(a.get("name", "") for a in tr.get("artists", []))
-        u = (tr.get("external_urls") or {}).get("spotify", "#")
-        items_html.append(f"<li>{i:02d}. <a href='{u}' target='_blank'>{artists} — {nm}</a></li>")
-
-    return f"""
-        <h2>✅ 已建立歌單：<a href='{url}' target='_blank'>{title}</a></h2>
-        <p>模式：{"公開" if mode=="public" else "私人"}</p>
-        <p>情境：{text}</p>
-        <h3>曲目：</h3>
-        <ol>{''.join(items_html)}</ol>
-        <p><a href='/recommend'>↩︎ 回推薦頁</a> ｜ <a href='/welcome'>🏠 回首頁</a></p>
-    """
 
 
 @app.route("/logout")

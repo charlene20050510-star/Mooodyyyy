@@ -609,6 +609,173 @@ def recommend():
             "<a href='/welcome'>回首頁</a>"
         )
 
+@app.route("/create_playlist", methods=["POST"])
+def create_playlist():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("home"))
+
+    mode = (request.form.get("mode") or "private").strip()
+    text = (request.form.get("text") or "").strip()
+    if not text or mode not in ("public", "private"):
+        return "參數不完整。<a href='/recommend?preview=1'>返回</a>"
+
+    try:
+        params = map_text_to_params(text)
+
+        user_pool = collect_user_tracks(sp, max_n=150)
+        ext_pool  = collect_external_tracks(sp, max_n=300)
+        if not user_pool and not ext_pool:
+            return "沒有可加入的歌曲。<a href='/recommend?preview=1'>返回</a>"
+
+        # 收集有效 track id，最多 300
+        ids, seen = [], set()
+        for t in (user_pool + ext_pool):
+            tid = t.get("id")
+            if isinstance(tid, str) and len(tid) == 22 and tid not in seen:
+                ids.append(tid)
+                seen.add(tid)
+                if len(ids) >= 300:
+                    break
+
+        feats = audio_features_map(sp, ids)
+
+        # ===== 3 熟悉 + 7 新鮮（不硬塞）同樣邏輯 =====
+        used = set()
+
+        user_all_ids = {
+            t.get("id") for t in user_pool
+            if isinstance(t.get("id"), str) and len(t.get("id")) == 22
+        }
+
+        def _safe_artist_id(tr):
+            a = tr.get("artists") or tr.get("artist") or []
+            if isinstance(a, list) and a:
+                first = a[0]
+                return first.get("id") if isinstance(first, dict) else None
+            if isinstance(a, dict):
+                return a.get("id")
+            return None
+
+        user_candidates = pick_top_n(user_pool, feats, params, n=10, used_ids=set())
+
+        anchors = []
+        for tr in user_candidates:
+            tid = tr.get("id")
+            if not isinstance(tid, str) or len(tid) != 22:
+                continue
+            if tid in used:
+                continue
+            tr["source"] = "user"
+            anchors.append(tr)
+            used.add(tid)
+            if len(anchors) >= 3:
+                break
+
+        ext_candidates = pick_top_n(ext_pool, feats, params, n=50, used_ids=set())
+
+        ext_chosen, seen_artists = [], set()
+        for tr in ext_candidates:
+            tid = tr.get("id")
+            if not isinstance(tid, str) or len(tid) != 22:
+                continue
+            if tid in used or tid in user_all_ids:
+                continue
+            aid = _safe_artist_id(tr)
+            if aid and aid in seen_artists:
+                continue
+            seen_artists.add(aid)
+            tr["source"] = "external"
+            ext_chosen.append(tr)
+            used.add(tid)
+            if len(ext_chosen) >= 7:
+                break
+
+        if len(ext_chosen) < 7:
+            for tr in ext_candidates:
+                if len(ext_chosen) >= 7:
+                    break
+                tid = tr.get("id")
+                if not isinstance(tid, str) or len(tid) != 22:
+                    continue
+                if tid in used:
+                    continue
+                aid = _safe_artist_id(tr)
+                if aid and aid in seen_artists:
+                    continue
+                seen_artists.add(aid)
+                tr["source"] = "external"
+                ext_chosen.append(tr)
+                used.add(tid)
+
+        mixed = anchors + ext_chosen
+
+        if len(mixed) < 10:
+            for tr in ext_candidates:
+                if len(mixed) >= 10:
+                    break
+                tid = tr.get("id")
+                if not isinstance(tid, str) or len(tid) != 22 or tid in used:
+                    continue
+                tr["source"] = "external"
+                mixed.append(tr)
+                used.add(tid)
+
+        if len(mixed) < 10:
+            for tr in user_candidates:
+                if len(mixed) >= 10:
+                    break
+                tid = tr.get("id")
+                if not isinstance(tid, str) or len(tid) != 22 or tid in used:
+                    continue
+                tr["source"] = "user"
+                mixed.append(tr)
+                used.add(tid)
+
+        top10 = mixed[:10]
+
+        # === 建立歌單 ===
+        user = sp.current_user()
+        user_id = (user or {}).get("id")
+        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+        title = f"Mooodyyy · {ts} UTC"
+        desc = f"情境：{text}（最多 3 首來自個人曲庫 + 其餘外部）"
+
+        playlist = sp.user_playlist_create(
+            user=user_id,
+            name=title,
+            public=(mode == "public"),
+            description=desc
+        )
+        sp.playlist_add_items(playlist_id=playlist["id"], items=[t["id"] for t in top10])
+        url = (playlist.get("external_urls") or {}).get("spotify", "#")
+
+        # 成功頁（保留，方便從預覽模式回來）
+        items_html = []
+        for i, tr in enumerate(top10, 1):
+            nm = tr.get("name", "")
+            artists = ", ".join(a.get("name", "") for a in tr.get("artists", []))
+            u = (tr.get("external_urls") or {}).get("spotify", "#")
+            src = tr.get("source", "")
+            badge = "（你的曲庫）" if src == "user" else "（新探索）"
+            items_html.append(f"<li>{i:02d}. <a href='{u}' target='_blank'>{artists} — {nm}</a> {badge}</li>")
+
+        return f"""
+            <h2>✅ 已建立歌單：<a href='{url}' target='_blank'>{title}</a></h2>
+            <p>模式：{"公開" if mode=="public" else "私人"}</p>
+            <p>情境：{text}</p>
+            <h3>曲目：</h3>
+            <ol>{''.join(items_html)}</ol>
+            <p><a href='/recommend?preview=1'>↩︎ 回預覽頁</a> ｜ <a href='/welcome'>🏠 回首頁</a></p>
+        """
+
+    except Exception as e:
+        print(f"❌ create_playlist error: {e}")
+        return (
+            "<h2>❌ 建立歌單失敗</h2>"
+            f"<p>錯誤訊息：{str(e)}</p>"
+            "<a href='/recommend?preview=1'>返回</a>"
+        )
 
 @app.route("/logout")
 def logout():

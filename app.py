@@ -1,992 +1,333 @@
-from flask import Flask, request, redirect, session, url_for
-import os
-import time
-from datetime import datetime
+import re
+import random
+from typing import Dict, List, Tuple
 import spotipy
-from spotipy.oauth2 import SpotifyOAuth
-import math
-from typing import List, Dict
 
+# ============ 改善 1: 更精確的文字分析 ============
 
-app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "devsecret")
-SCOPE = "user-library-read user-top-read playlist-modify-public playlist-modify-private"
-
-# ======================================================
-# Flask & Spotify OAuth setup
-# ======================================================
-
-# ========= [新增] 語意描述與分數工具 =========
-
-def _feature_words(f: Dict) -> List[str]:
-    """把 Spotify audio features 轉成幾個簡單形容詞（英文），讓文字向量可用"""
-    if not f:
-        return []
-    w = []
-    en = f.get("energy"); va = f.get("valence"); da = f.get("danceability")
-    ac = f.get("acousticness"); ins = f.get("instrumentalness"); te = f.get("tempo")
-
-    if en is not None:
-        if en >= 0.66: w.append("energetic")
-        elif en <= 0.34: w.append("calm")
-        else: w.append("mid-energy")
-
-    if va is not None:
-        if va >= 0.66: w.append("happy")
-        elif va <= 0.34: w.append("sad")
-        else: w.append("neutral-mood")
-
-    if da is not None:
-        if da >= 0.6: w.append("danceable")
-        else: w.append("not-very-danceable")
-
-    if ac is not None:
-        if ac >= 0.6: w.append("acoustic")
-        else: w.append("electronic")
-
-    if ins is not None and ins >= 0.5:
-        w.append("instrumental")
-    else:
-        w.append("vocal")
-
-    if te:
-        try:
-            w.append(f"{int(round(te))} bpm")
-        except Exception:
-            pass
-
-    return w
-
-
-def _track_desc(track: Dict, feat: Dict) -> str:
-    """把一首歌轉成一段可被 embedding 的簡短文字描述"""
-    name = track.get("name", "")
-    artists = ", ".join([a.get("name", "") for a in (track.get("artists") or [])])
-    words = " ".join(_feature_words(feat))
-    return f"{name} by {artists}. {words}".strip()
-
-
-def _cosine(a: List[float], b: List[float]) -> float:
-    """不依賴 numpy 的 cosine 相似度"""
-    dot = sum((x*y for x, y in zip(a, b)))
-    na = math.sqrt(sum((x*x for x in a))) + 1e-8
-    nb = math.sqrt(sum((y*y for y in b))) + 1e-8
-    return dot / (na * nb)
-
-
-def _embed_texts(texts: List[str]) -> List[List[float]]:
+def classify_mood_detailed(text: str) -> Dict:
     """
-    做文字 embedding（自動偵測新/舊版 openai 套件；失敗就回空）
-    你環境要有 OPENAI_API_KEY
+    更細緻的情境分析，返回多個維度的分數
     """
-    try:
-        # 新版 openai 套件
-        from openai import OpenAI
-        client = OpenAI()
-        res = client.embeddings.create(model="text-embedding-3-small", input=texts)
-        return [d.embedding for d in res.data]
-    except Exception:
-        try:
-            # 舊版 openai 套件
-            import openai
-            res = openai.Embedding.create(model="text-embedding-ada-002", input=texts)
-            return [d["embedding"] for d in res["data"]]
-        except Exception as e:
-            print(f"[warn] embedding failed: {e}")
-            return []
-
-
-def _numeric_affinity(feat: Dict, params: Dict) -> float:
-    """
-    用音樂特徵算一個 0~1 的接近度：energy/valence/danceability/acousticness/tempo
-    有就算、沒有就跳過；最後取平均。
-    """
-    if not feat:
-        return 0.5
-    score_sum, cnt = 0.0, 0
-
-    def closeness(v, t, scale=1.0):
-        # v, t 在 0~1 範圍時直接用；tempo 用 scale 正規化
-        return max(0.0, 1.0 - abs((v - t) / scale))
-
-    for k in ("energy", "valence", "danceability", "acousticness"):
-        vk = feat.get(k); tk = params.get(f"target_{k}")
-        if vk is not None and tk is not None:
-            score_sum += closeness(vk, tk, 1.0); cnt += 1
-
-    # tempo：以 120 bpm 當 1 個 scale（可調）
-    vtempo = feat.get("tempo"); ttempo = params.get("target_tempo")
-    if vtempo and ttempo:
-        score_sum += closeness(vtempo, ttempo, 120.0); cnt += 1
-    elif vtempo and (params.get("min_tempo") or params.get("max_tempo")):
-        # 若只有區間：落在區間內給 1，偏離則線性遞減
-        lo = params.get("min_tempo", vtempo); hi = params.get("max_tempo", vtempo)
-        if lo <= vtempo <= hi:
-            score_sum += 1.0
-        else:
-            edge = lo if vtempo < lo else hi
-            score_sum += max(0.0, 1.0 - abs(vtempo - edge) / 120.0)
-        cnt += 1
-
-    return (score_sum / cnt) if cnt else 0.5
-
-
-def build_semantic_map(prompt: str, tracks: List[Dict], feats_map: Dict[str, Dict]) -> Dict[str, float]:
-    """
-    回傳 {track_id: 語意相似度(0~1)}。
-    實作：把每首歌轉成短描述 → 和 prompt 一起丟 embedding → 計算 cosine。
-    如果 embedding 失敗，回傳所有 0.5（不中斷流程）。
-    """
-    # 準備描述
-    tids, descs = [], []
-    for tr in tracks:
-        tid = tr.get("id")
-        if isinstance(tid, str) and len(tid) == 22 and tid in feats_map:
-            tids.append(tid)
-            descs.append(_track_desc(tr, feats_map.get(tid)))
-
-    if not tids:
-        return {}
-
-    embs = _embed_texts([prompt] + descs)
-    if not embs or len(embs) != (1 + len(descs)):
-        # 失敗：給所有人 0.5
-        print("[warn] embedding empty or length mismatch; fallback to 0.5")
-        return {tid: 0.5 for tid in tids}
-
-    q = embs[0]
-    sims = {}
-    for i, tid in enumerate(tids):
-        sims[tid] = max(0.0, min(1.0, _cosine(q, embs[i + 1])))
-
-    return sims
-
-
-def rank_pool_by_semantic_and_features(pool: List[Dict], feats_map: Dict[str, Dict],
-                                       sem_map: Dict[str, float], params: Dict,
-                                       top_n: int) -> List[Dict]:
-    """
-    對 pool 排序：final = 0.6 * 語意 + 0.4 * 數值特徵接近度
-    排完回傳前 top_n（每首歌在 dict 裡加 _score 供除錯）。
-    """
-    scored = []
-    for tr in pool:
-        tid = tr.get("id")
-        if not (isinstance(tid, str) and len(tid) == 22):
-            continue
-        f = feats_map.get(tid)
-        sem = sem_map.get(tid, 0.5)
-        num = _numeric_affinity(f, params)
-        final = 0.6 * sem + 0.4 * num
-        tr["_score"] = final
-        scored.append(tr)
-    scored.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
-    return scored[:top_n]
-# ========= [新增工具結束] =========
-
-def oauth():
-    """Create a SpotifyOAuth instance. Redirect URI must exactly match Spotify Dashboard."""
-    return SpotifyOAuth(
-        client_id=os.environ.get("SPOTIPY_CLIENT_ID"),
-        client_secret=os.environ.get("SPOTIPY_CLIENT_SECRET"),
-        redirect_uri=os.environ.get("SPOTIPY_REDIRECT_URI"),
-        scope=SCOPE,
-        cache_path=None,
-        open_browser=False,
-        show_dialog=True,  # force account picker / consent refresh
-    )
-
-
-# ---------------- Token helpers (access + refresh) -----------------
-
-def _store_token(token_info):
-    if not token_info:
-        return
-    old = session.get("token", {})
-    if old and not token_info.get("refresh_token"):
-        token_info["refresh_token"] = old.get("refresh_token")
-    session["token"] = token_info
-
-
-def _get_valid_token():
-    tok = session.get("token")
-    if not tok:
-        return None
-    # refresh 60s before expiry if we have a refresh token
-    try:
-        if time.time() > (tok.get("expires_at", 0) - 60) and tok.get("refresh_token"):
-            new_tok = oauth().refresh_access_token(tok["refresh_token"]) or {}
-            _store_token({**tok, **new_tok})
-            tok = session.get("token")
-    except Exception as e:
-        print(f"⚠️ refresh_access_token failed: {e}")
-    return tok
-
-
-def get_spotify_client():
-    tok = _get_valid_token()
-    if not tok:
-        return None
-    return spotipy.Spotify(auth=tok.get("access_token"), requests_timeout=15)
-
-
-# ======================================================
-# Simple rules → target features (can swap to embeddings later)
-# ======================================================
-
-def map_text_to_params(text):
-    t = (text or "").lower()
-    params = {
-        "target_energy": 0.5,
-        "target_valence": 0.5,
-        "target_tempo": 110.0,
-        "prefer_acoustic": False,
-        "prefer_instrumental": False,
-        "seed_genres": [],
+    text = text.lower()
+    
+    # 能量維度 (0-1)
+    energy_keywords = {
+        'high': ['派對', 'party', '嗨', '開趴', '運動', 'workout', '跳舞', 'dance', '興奮'],
+        'low': ['放鬆', 'chill', '冷靜', '安靜', '睡覺', '休息', '疲累']
     }
-    if any(k in t for k in ["累", "疲", "sad", "lonely", "emo", "哭"]):
-        params.update({"target_energy": 0.2, "target_valence": 0.25, "target_tempo": 80})
-    if any(k in t for k in ["開心", "爽", "happy", "party", "嗨"]):
-        params.update({"target_energy": 0.8, "target_valence": 0.8, "target_tempo": 125})
-    if any(k in t for k in ["讀書", "專心", "focus", "工作", "coding"]):
-        params.update({"target_energy": 0.3, "target_valence": 0.5, "target_tempo": 90})
-    if any(k in t for k in ["爵士", "jazz"]):
-        params["seed_genres"].append("jazz")
-    if any(k in t for k in ["lofi", "lo-fi", "lo fi", "輕音"]):
-        params["seed_genres"].append("lo-fi")
-    if any(k in t for k in ["鋼琴", "piano", "acoustic"]):
-        params["prefer_acoustic"] = True
-    if any(k in t for k in ["純音樂", "instrumental"]):
-        params["prefer_instrumental"] = True
-    return params
+    
+    # 情緒維度 (0-1)
+    mood_keywords = {
+        'positive': ['開心', 'happy', '快樂', '爽', '慶祝', '興奮'],
+        'negative': ['悲傷', 'sad', '難過', '失戀', '心碎', '憂鬱', '沮喪'],
+        'neutral': ['專注', 'focus', '讀書', '工作', 'coding']
+    }
+    
+    # 場景維度
+    context_keywords = {
+        'study': ['讀書', '學習', '專注', 'study', 'focus', 'coding', '工作'],
+        'social': ['派對', 'party', '朋友', '聚會', '開趴'],
+        'alone': ['獨處', '一個人', '深夜', '思考', '回憶'],
+        'exercise': ['運動', 'workout', '跑步', '健身', '瑜伽']
+    }
+    
+    # 音樂風格
+    genre_hints = {
+        'acoustic': ['吉他', '原聲', 'acoustic', '民謠', '清新'],
+        'electronic': ['電音', 'edm', '電子', 'techno', 'house'],
+        'jazz': ['爵士', 'jazz', '咖啡廳', '慵懶'],
+        'classical': ['古典', '鋼琴', 'piano', '弦樂'],
+        'lofi': ['lofi', 'lo-fi', '輕音樂']
+    }
+    
+    def calculate_score(keywords_dict, default=0.5):
+        scores = {}
+        for category, keywords in keywords_dict.items():
+            score = sum(1 for kw in keywords if kw in text)
+            scores[category] = min(1.0, score * 0.3 + default)
+        return scores
+    
+    energy_scores = calculate_score(energy_keywords)
+    mood_scores = calculate_score(mood_keywords)
+    context_scores = calculate_score(context_keywords)
+    genre_scores = calculate_score(genre_hints, default=0)
+    
+    # 計算最終參數
+    energy = energy_scores.get('high', 0.5) - energy_scores.get('low', 0.5) + 0.5
+    energy = max(0.1, min(0.9, energy))
+    
+    valence = mood_scores.get('positive', 0.5) - mood_scores.get('negative', 0.5) + 0.5
+    valence = max(0.1, min(0.9, valence))
+    
+    # 根據場景調整其他參數
+    danceability = 0.5
+    acousticness = 0.3
+    tempo = 110
+    
+    if context_scores.get('social', 0) > 0.5:
+        danceability = 0.8
+        tempo = 125
+    elif context_scores.get('study', 0) > 0.5:
+        energy = min(energy, 0.4)
+        acousticness = 0.7
+        tempo = 85
+    elif context_scores.get('exercise', 0) > 0.5:
+        energy = 0.9
+        danceability = 0.9
+        tempo = 140
+    
+    # 風格偏好
+    preferred_genres = [genre for genre, score in genre_scores.items() if score > 0]
+    
+    return {
+        'target_energy': energy,
+        'target_valence': valence,
+        'target_danceability': danceability,
+        'target_acousticness': acousticness,
+        'target_tempo': tempo,
+        'preferred_genres': preferred_genres,
+        'context': max(context_scores.keys(), key=lambda k: context_scores.get(k, 0))
+    }
 
+# ============ 改善 2: 智慧外部來源選擇 ============
 
-# ======================================================
-# Spotify helpers (fetch pool, features, ranking)
-# ======================================================
-CACHE = {"feat": {}}
-
-def fetch_playlist_tracks(sp, playlist_id, max_n=100):
-    """Fetch items from a playlist with resilient market fallbacks."""
-    tracks = []
-    offset = 0
-    market_trials = [None, "from_token", "TW", "US"]
-    while len(tracks) < max_n:
+def get_context_playlists(sp, context: str, preferred_genres: List[str]) -> List[str]:
+    """
+    根據情境和偏好風格選擇不同的 Spotify 歌單來源
+    """
+    playlist_sources = {
+        'study': [
+            'Deep Focus', 'Peaceful Piano', 'Lofi Hip Hop', 'Ambient Chill',
+            'Brain Food', 'Instrumental Study', 'Coffee Table Jazz'
+        ],
+        'social': [
+            'Party Hits', 'Dance Pop', 'Feel Good Pop', 'Party Anthems',
+            'Dance Hits', 'Pop Rising', 'Mood Booster'
+        ],
+        'alone': [
+            'Melancholy Indie', 'Sad Songs', 'Indie Folk', 'Contemplative',
+            'Rainy Day', 'Solitude', 'Night Shift'
+        ],
+        'exercise': [
+            'Workout', 'Power Workout', 'Cardio', 'Running',
+            'Beast Mode', 'Workout Twerkout', 'Motivation Mix'
+        ],
+        'default': [
+            'Today\'s Top Hits', 'Discover Weekly', 'Release Radar',
+            'Fresh Finds', 'New Music Friday'
+        ]
+    }
+    
+    # 根據風格偏好添加特定歌單
+    genre_playlists = {
+        'jazz': ['Jazz Classics', 'Smooth Jazz', 'Jazz Vibes'],
+        'acoustic': ['Acoustic Hits', 'Folk & Friends', 'Unplugged'],
+        'electronic': ['Electronic Mix', 'Dance Hits', 'Electronic Rising'],
+        'lofi': ['Lofi Hip Hop', 'Chill Lofi Study Beats', 'lofi hip hop radio']
+    }
+    
+    target_names = playlist_sources.get(context, playlist_sources['default'])
+    
+    # 添加風格特定歌單
+    for genre in preferred_genres:
+        if genre in genre_playlists:
+            target_names.extend(genre_playlists[genre])
+    
+    # 搜尋實際存在的歌單
+    found_playlists = []
+    for name in target_names:
         try:
-            market = market_trials[min(offset // 200, len(market_trials) - 1)]
-            kwargs = {"limit": 50, "offset": offset}
-            if market is not None:
-                kwargs["market"] = market
-            batch = sp.playlist_items(playlist_id, **kwargs)
-            items = (batch or {}).get("items", [])
-            if not items:
-                break
-            for it in items:
-                tr = (it or {}).get("track") or {}
-                if tr.get("id") and tr.get("is_playable", True):
-                    tracks.append(tr)
-                if len(tracks) >= max_n:
-                    break
-            if not (batch or {}).get("next"):
-                break
-            offset += 50
+            results = sp.search(q=name, type='playlist', limit=3)
+            playlists = results.get('playlists', {}).get('items', [])
+            for pl in playlists:
+                if pl.get('id') and pl.get('tracks', {}).get('total', 0) > 20:
+                    found_playlists.append(pl['id'])
+                    if len(found_playlists) >= 8:  # 限制數量
+                        return found_playlists
         except Exception as e:
-            print(f"⚠️ fetch_playlist_tracks failed ({playlist_id}): {e}")
-            break
-    return tracks
-# ---------- Collect user / external pools and pick a 3+7 mix ----------
-
-def collect_user_tracks(sp, max_n=150):
-    """抓使用者的常聽/已儲存歌曲，優先常聽。"""
-    pool = []
-    # Top tracks
-    try:
-        tops = sp.current_user_top_tracks(limit=50, time_range="medium_term")
-        for it in (tops or {}).get("items", []):
-            if it and it.get("id"):
-                pool.append(it)
-            if len(pool) >= max_n:
-                return pool[:max_n]
-    except Exception as e:
-        print(f"⚠️ current_user_top_tracks failed: {e}")
-
-    # Saved tracks
-    try:
-        offset = 0
-        while len(pool) < max_n:
-            saved = sp.current_user_saved_tracks(limit=50, offset=offset)
-            items = (saved or {}).get("items", [])
-            if not items:
-                break
-            for it in items:
-                tr = (it or {}).get("track") or {}
-                if tr and tr.get("id"):
-                    pool.append(tr)
-                if len(pool) >= max_n:
-                    break
-            offset += 50
-    except Exception as e:
-        print(f"⚠️ current_user_saved_tracks failed: {e}")
-
-    return pool[:max_n]
-
-
-def collect_external_tracks(sp, max_n=300):
-    """抓外部來源（不依賴固定 ID，避免 404）。"""
-    pool = []
-
-    # Featured playlists（區域自動）
-    try:
-        featured = sp.featured_playlists(country="TW")
-        for pl in (featured or {}).get("playlists", {}).get("items", [])[:8]:
-            pool.extend(fetch_playlist_tracks(sp, pl.get("id"), max_n=80))
-            if len(pool) >= max_n:
-                return pool[:max_n]
-    except Exception as e:
-        print(f"⚠️ featured_playlists failed: {e}")
-
-    # 類別歌單（再補）
-    try:
-        cats = sp.categories(country="TW", limit=6)
-        for c in (cats or {}).get("categories", {}).get("items", []):
-            cps = sp.category_playlists(category_id=c.get("id"), country="TW", limit=3)
-            for pl in (cps or {}).get("playlists", {}).get("items", []):
-                pool.extend(fetch_playlist_tracks(sp, pl.get("id"), max_n=60))
-                if len(pool) >= max_n:
-                    return pool[:max_n]
-    except Exception as e:
-        print(f"⚠️ categories fallback failed: {e}")
-
-    # 最後才試固定 ID（可能 404，但無所謂）
-    public_lists = [
-        "37i9dQZF1DXcBWIGoYBM5M",  # Today's Top Hits
-        "37i9dQZEVXbMDoHDwVN2tF",  # Global Top 50
-        "37i9dQZF1DX4dyzvuaRJ0n",  # Hot Hits Taiwan
-    ]
-    for pid in public_lists:
-        try:
-            pool.extend(fetch_playlist_tracks(sp, pid, max_n=100))
-            if len(pool) >= max_n:
-                break
-        except Exception as e:
-            print(f"⚠️ public playlist fallback failed: {e}")
-
-    return pool[:max_n]
-
-
-def pick_top_n(tracks, feats, params, n, used_ids=None):
-    """從 tracks 用 scoring 挑 n 首，避開 used_ids。"""
-    used_ids = used_ids or set()
-    scored = []
-    for t in tracks:
-        tid = t.get("id")
-        if not tid or tid in used_ids:
+            print(f"搜尋歌單 '{name}' 失敗: {e}")
             continue
-        s = score_track(feats.get(tid), params)
-        scored.append((s, t))
-    scored.sort(key=lambda x: x[0])
-    out = []
-    for s, t in scored:
-        tid = t.get("id")
-        if tid in used_ids:
+    
+    return found_playlists or ['37i9dQZF1DXcBWIGoYBM5M']  # fallback
+
+# ============ 改善 3: 更好的相似度計算 ============
+
+def calculate_track_similarity(track_features: Dict, target_params: Dict) -> float:
+    """
+    計算歌曲與目標參數的相似度，使用加權距離
+    """
+    if not track_features:
+        return 0.0
+    
+    weights = {
+        'energy': 0.25,
+        'valence': 0.25,
+        'danceability': 0.15,
+        'acousticness': 0.15,
+        'tempo': 0.20
+    }
+    
+    similarity = 0.0
+    total_weight = 0.0
+    
+    for feature, weight in weights.items():
+        target_key = f'target_{feature}'
+        if target_key in target_params and feature in track_features:
+            target_val = target_params[target_key]
+            track_val = track_features[feature]
+            
+            if feature == 'tempo':
+                # tempo 需要正規化 (通常在 50-200 之間)
+                diff = abs(track_val - target_val) / 150.0
+            else:
+                # 其他特徵都在 0-1 之間
+                diff = abs(track_val - target_val)
+            
+            similarity += weight * (1.0 - diff)
+            total_weight += weight
+    
+    return similarity / total_weight if total_weight > 0 else 0.0
+
+# ============ 改善 4: 多樣性增強 ============
+
+def ensure_diversity(tracks: List[Dict], max_per_artist: int = 2) -> List[Dict]:
+    """
+    確保歌單的多樣性：限制同一藝人的歌曲數量
+    """
+    artist_counts = {}
+    diverse_tracks = []
+    
+    # 隨機打亂以增加變化
+    shuffled_tracks = tracks.copy()
+    random.shuffle(shuffled_tracks)
+    
+    for track in shuffled_tracks:
+        artists = track.get('artists', [])
+        if not artists:
             continue
-        out.append(t)
-        used_ids.add(tid)
-        if len(out) >= n:
-            break
-    return out
-
-def _safe_audio_features(sp, ids):
-    """
-    穩健版 audio_features：
-    - 去重
-    - 只保留看起來像 Spotify track 的 22 字元 id
-    - 以批次(<=50)查；若批次失敗（403/400），把批次切成兩半遞迴重試
-    """
-    # 只留 22 長度的字串，避免混到 episode/local/非法 id
-    clean = [i for i in ids if isinstance(i, str) and len(i) == 22]
-    seen = set()
-    clean = [i for i in clean if not (i in seen or seen.add(i))]
-
-    feats = {}
-
-    def fetch_chunk(chunk):
-        if not chunk:
-            return
-        try:
-            res = sp.audio_features(tracks=chunk) or []
-            for f in res:
-                if not f:
-                    continue
-                tid = f.get("id")
-                if tid:
-                    feats[tid] = f
-        except Exception as e:
-            # 批次失敗就切半重試，直到單顆
-            if len(chunk) == 1:
-                print(f"⚠️ audio_features single-id failed: {chunk[0]} -> {e}")
-                return
-            mid = len(chunk) // 2
-            fetch_chunk(chunk[:mid])
-            fetch_chunk(chunk[mid:])
-
-    # 以 50 筆為一批（官方上限 100；保守一點更穩）
-    for i in range(0, len(clean), 50):
-        fetch_chunk(clean[i:i+50])
-
-    return feats
-
-def audio_features_map(sp, track_ids):
-    # 先把 cache 裡有的拿出來
-    feats = {}
-    to_query = []
-    for tid in track_ids:
-        if tid in CACHE["feat"]:
-            feats[tid] = CACHE["feat"][tid]
-        else:
-            to_query.append(tid)
-
-    # 安全起見限制最多查 300 筆（足夠 3+7 流程）
-    to_query = to_query[:300]
-
-    # 用安全批次查
-    fresh = _safe_audio_features(sp, to_query)
-
-    # 寫回 cache
-    for tid, f in fresh.items():
-        CACHE["feat"][tid] = f
-        feats[tid] = f
-
-    return feats
-
-
-def _dist(a, b):
-    return abs((a or 0) - (b or 0))
-
-
-def score_track(f, p):
-    if not f:
-        return 1e9
-    s = 0.0
-    s += _dist(f.get("energy"), p["target_energy"])  # energy gap
-    s += _dist(f.get("valence"), p["target_valence"])  # positivity gap
-    tempo = f.get("tempo") or p["target_tempo"]
-    s += abs(tempo - p["target_tempo"]) / 100.0  # scale to similar magnitude
-    if p["prefer_acoustic"]:
-        s += (1.0 - (f.get("acousticness") or 0)) * 0.5
-    if p["prefer_instrumental"]:
-        s += (1.0 - (f.get("instrumentalness") or 0)) * 0.5
-    return s
-
-
-def select_top(tracks, feats, params, top_n=10):
-    scored = []
-    for t in tracks:
-        tid = t.get("id")
-        s = score_track(feats.get(tid), params)
-        scored.append((s, t))
-    scored.sort(key=lambda x: x[0])
-    return [t for _, t in scored[:top_n]]
-
-def item_li(i, tr):
-    name = tr.get("name", "Unknown")
-    artists = ", ".join([a.get("name", "") for a in tr.get("artists", [])])
-    url = (tr.get("external_urls") or {}).get("spotify", "#")
-    return f"<li style='margin:8px 0; list-style:none;'>{i:02d}. <a href='{url}' target='_blank' style='color:#1DB954'><strong>{artists}</strong> - {name}</a></li>"
-
-# ======================================================
-# Routes
-# ======================================================
-
-@app.route("/")
-def home():
-    return '<a href="/login">🔐 Login with Spotify</a>'
-
-
-@app.route("/login")
-def login():
-    return redirect(oauth().get_authorize_url())
-
-
-@app.route("/callback")
-def callback():
-    code = request.args.get("code")
-    if not code:
-        return redirect(url_for("home"))
-    try:
-        token_info = oauth().get_access_token(code, as_dict=True)
-        _store_token(token_info)
-        return redirect(url_for("welcome"))
-    except Exception as e:
-        print(f"❌ OAuth callback error: {e}")
-        return "<h3>Authorization failed.</h3><a href='/'>Try again</a>"
-
-@app.route("/welcome")
-def welcome():
-    sp = get_spotify_client()
-    if not sp:
-        return redirect(url_for("home"))
-    try:
-        me = sp.current_user()
-        name = (me or {}).get("display_name") or "音樂愛好者"
-    except Exception as e:
-        print(f"⚠️ current_user failed: {e}")
-        name = "音樂愛好者"
-
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset='UTF-8' />
-      <title>Mooodyyy - AI 音樂情境推薦</title>
-      <style>
-        body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:linear-gradient(135deg,#1DB954,#1ed760); color:#fff; margin:0; padding:20px; min-height:100vh; }}
-        .container {{ max-width:640px; margin:0 auto; }}
-        .card {{ background:rgba(255,255,255,0.1); border-radius:16px; padding:28px; backdrop-filter:blur(10px); }}
-        textarea {{ width:100%; box-sizing:border-box; border:none; border-radius:10px; padding:14px; font-size:16px; resize:vertical; }}
-        button {{ background:#FF6B6B; color:#fff; border:none; padding:12px 20px; border-radius:8px; font-size:16px; cursor:pointer; margin-top:10px; }}
-        button:hover {{ background:#ff5252; }}
-        a {{ color:#fff; }}
-      </style>
-    </head>
-    <body>
-      <div class='container'>
-        <h1>🎵 Hello {name}</h1>
-        <p>歡迎來到 Mooodyyy — 用一句話描述你的情境，我來幫你配歌。</p>
-
-        <div class='card'>
-          <h2>🎯 情境推薦</h2>
-          <p>輸入你的心情或場景，例如：下雨夜的鋼琴、專心讀書的輕音樂、失戀的深夜車程⋯</p>
-          <form action='/recommend' method='post'>
-            <textarea name='text' rows='4' placeholder='例如：下班後的放鬆小酒館氛圍'></textarea><br/>
-            <button type='submit'>生成 Top 10</button>
-          </form>
-        </div>
-
-        <p style='text-align:center; margin-top:32px; opacity:.85;'>
-          <a href='/logout'>登出</a>
-        </p>
-      </div>
-    </body>
-    </html>
-    """
-    return html
-
-
-@app.route("/recommend", methods=["GET", "POST"])
-def recommend():
-    sp = get_spotify_client()
-    if not sp:
-        return redirect(url_for("home"))
-
-    if request.method == "POST":
-        text = (request.form.get("text") or "").strip()
-    else:
-        text = (request.args.get("text") or "").strip()
-
-    if not text:
-        return redirect(url_for("welcome"))
-
-    try:
-        # 1) 收集候選池
-        user_pool = collect_user_tracks(sp, max_n=150)
-        ext_pool  = collect_external_tracks(sp, max_n=300)
-
-        if not user_pool and not ext_pool:
-            return (
-                "<h2>❌ 暫時無法獲取歌曲</h2>"
-                "<p>請先重新登入授權（讀取常聽/已儲存），或稍後再試。</p>"
-                "<a href='/welcome'>回首頁</a>"
-            )
-
-        # 2) 開始計分
-        t0 = time.time()
-        params = map_text_to_params(text)
-
-        # 收集有效 track id，最多 300
-        ids, seen = [], set()
-        for t in (user_pool + ext_pool):
-            tid = t.get("id")
-            if isinstance(tid, str) and len(tid) == 22 and tid not in seen:
-                ids.append(tid)
-                seen.add(tid)
-                if len(ids) >= 300:
-                    break
-
-        feats = audio_features_map(sp, ids)
-
-        # 3) 語意 + 特徵排分（重點）
-        all_candidates = user_pool + ext_pool
-        sem_map = build_semantic_map(text, all_candidates, feats)
-
-        user_candidates = rank_pool_by_semantic_and_features(
-            user_pool, feats, sem_map, params, top_n=10
-        )
-        ext_candidates = rank_pool_by_semantic_and_features(
-            ext_pool, feats, sem_map, params, top_n=50
-        )
-
-        # 工具：安全拿 artist id
-        def _safe_artist_id(tr):
-            a = tr.get("artists") or tr.get("artist") or []
-            if isinstance(a, list) and a:
-                first = a[0]
-                return first.get("id") if isinstance(first, dict) else None
-            if isinstance(a, dict):
-                return a.get("id")
-            return None
-
-        user_all_ids = {
-            t.get("id") for t in user_pool
-            if isinstance(t.get("id"), str) and len(t.get("id")) == 22
-        }
-
-        # 4) 3 熟悉 + 7 新歌（不硬塞）
-        used = set()
-
-        # 4a) 你的曲庫：最多 3 首當熟悉 anchor
-        anchors = []
-        for tr in user_candidates:
-            tid = tr.get("id")
-            if not isinstance(tid, str) or len(tid) != 22:
-                continue
-            if tid in used:
-                continue
-            tr["source"] = "user"
-            anchors.append(tr)
-            used.add(tid)
-            if len(anchors) >= 3:
-                break
-
-        # 4b) 外部新歌：最多 7 首，先嚴格排除你曲庫 + 同歌手抑制
-        ext_chosen, seen_artists = [], set()
-        for tr in ext_candidates:
-            if len(ext_chosen) >= 7:
-                break
-            tid = tr.get("id")
-            if not isinstance(tid, str) or len(tid) != 22:
-                continue
-            if tid in used or tid in user_all_ids:
-                continue
-            aid = _safe_artist_id(tr)
-            if aid and aid in seen_artists:
-                continue
-            seen_artists.add(aid)
-            tr["source"] = "external"
-            ext_chosen.append(tr)
-            used.add(tid)
-
-        # 4c) 若還不滿 7：放寬（可含你曲庫也有的，但仍避免重複/洗版）
-        if len(ext_chosen) < 7:
-            for tr in ext_candidates:
-                if len(ext_chosen) >= 7:
-                    break
-                tid = tr.get("id")
-                if not isinstance(tid, str) or len(tid) != 22 or tid in used:
-                    continue
-                aid = _safe_artist_id(tr)
-                if aid and aid in seen_artists:
-                    continue
-                seen_artists.add(aid)
-                tr["source"] = "external"
-                ext_chosen.append(tr)
-                used.add(tid)
-
-        # 4d) 混合 + 補齊到 10（優先外部，再回頭用你的曲庫）
-        mixed = anchors + ext_chosen
-
-        if len(mixed) < 10:
-            for tr in ext_candidates:
-                if len(mixed) >= 10:
-                    break
-                tid = tr.get("id")
-                if not isinstance(tid, str) or len(tid) != 22 or tid in used:
-                    continue
-                tr["source"] = "external"
-                mixed.append(tr)
-                used.add(tid)
-
-        if len(mixed) < 10:
-            for tr in user_candidates:
-                if len(mixed) >= 10:
-                    break
-                tid = tr.get("id")
-                if not isinstance(tid, str) or len(tid) != 22 or tid in used:
-                    continue
-                tr["source"] = "user"
-                mixed.append(tr)
-                used.add(tid)
-
-        top10 = mixed[:10]
-        dt = time.time() - t0
-
-        # 5) 預覽模式 or 直接建立私人歌單
-        preview = (request.args.get("preview") or request.form.get("preview") or "").strip()
-
-        if preview == "1":
-            # 預覽頁（保留你原本的樣式）
-            try:
-                songs_html = "\n".join(item_li(i + 1, tr) for i, tr in enumerate(top10))
-            except Exception:
-                # 若你的專案沒有 item_li()，退回簡易列印
-                items = []
-                for i, tr in enumerate(top10, 1):
-                    nm = tr.get("name", "")
-                    artists = ", ".join(a.get("name", "") for a in tr.get("artists", []))
-                    u = (tr.get("external_urls") or {}).get("spotify", "#")
-                    src = "（你的曲庫）" if tr.get("source") == "user" else "（新探索）"
-                    items.append(f"<li>{i:02d}. <a href='{u}' target='_blank'>{artists} — {nm}</a> {src}</li>")
-                songs_html = "\n".join(items)
-
-            buttons_html = f"""
-            <div style='margin: 20px 0;'>
-              <form method='POST' action='/create_playlist' style='display:inline; margin-right:10px;'>
-                <input type='hidden' name='mode' value='private'>
-                <input type='hidden' name='text' value='{text}'>
-                <button type='submit' style='background:#333; color:#fff; border:none; padding:10px 20px; border-radius:6px;'>➕ 存成「私人歌單」</button>
-              </form>
-              <form method='POST' action='/create_playlist' style='display:inline;'>
-                <input type='hidden' name='mode' value='public'>
-                <input type='hidden' name='text' value='{text}'>
-                <button type='submit' style='background:#1DB954; color:#fff; border:none; padding:10px 20px; border-radius:6px;'>➕ 存成「公開歌單」</button>
-              </form>
-            </div>
-            """
-
-            page = f"""
-            <html><head><meta charset='utf-8'><title>推薦結果（預覽）</title></head>
-            <body>
-              <div style='max-width:800px;margin:24px auto;font-family:sans-serif;'>
-                <h1>🎯 為你找到了 {len(top10)} 首歌</h1>
-                <p><strong>你的情境：</strong>"{text}"</p>
-                <p style='opacity:.85;'>候選來源：{len(user_pool)}（個人） + {len(ext_pool)}（外部） → 耗時 {dt:.1f} 秒｜規則：最多 3（個人）+ 至多 7（外部）</p>
-                <h2>🎵 推薦歌單：</h2>
-                <ol style='padding-left:0;'>
-                  {songs_html}
-                </ol>
-                {buttons_html}
-                <p style='margin-top:24px;'><a href='/welcome'>↩️ 回首頁</a> | <a href='/recommend'>🔄 再試一次</a></p>
-              </div>
-            </body></html>
-            """
-            return page
-
-        # 預設：直接建立「私人」歌單並導去 Spotify
-        user = sp.current_user()
-        user_id = (user or {}).get("id")
-
-        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-        title = f"Mooodyyy · {ts} UTC"
-        desc  = f"情境：{text}（最多 3 首來自個人曲庫 + 其餘外部）"
-
-        playlist = sp.user_playlist_create(
-            user=user_id,
-            name=title,
-            public=False,  # 固定私人
-            description=desc
-        )
-        sp.playlist_add_items(playlist_id=playlist["id"], items=[t["id"] for t in top10])
-
-        url = (playlist.get("external_urls") or {}).get("spotify", "#")
-        return redirect(url)
-
-    except Exception as e:
-        print(f"❌ recommend error: {e}")
-        return (
-            "<h2>❌ 系統暫時出錯</h2>"
-            f"<p>錯誤訊息：{str(e)}</p>"
-            "<a href='/welcome'>回首頁</a>"
-        )
+            
+        primary_artist = artists[0].get('name', 'Unknown')
+        current_count = artist_counts.get(primary_artist, 0)
         
-@app.route("/create_playlist", methods=["POST"])
-def create_playlist():
-    sp = get_spotify_client()
-    if not sp:
-        return redirect(url_for("home"))
+        if current_count < max_per_artist:
+            diverse_tracks.append(track)
+            artist_counts[primary_artist] = current_count + 1
+            
+            if len(diverse_tracks) >= 10:  # 限制總數
+                break
+    
+    return diverse_tracks
 
-    mode = (request.form.get("mode") or "private").strip()
-    text = (request.form.get("text") or "").strip()
-    if not text or mode not in ("public", "private"):
-        return "參數不完整。<a href='/recommend?preview=1'>返回</a>"
+# ============ 改善 5: 主要推薦函數 ============
 
+def generate_smart_playlist(sp, user_input: str) -> Tuple[List[Dict], Dict]:
+    """
+    智慧生成歌單的主函數
+    """
+    # 1. 分析使用者輸入
+    mood_analysis = classify_mood_detailed(user_input)
+    
+    # 2. 收集使用者音樂庫
+    user_tracks = collect_user_tracks(sp, max_n=100)
+    
+    # 3. 根據情境收集外部音樂
+    context = mood_analysis.get('context', 'default')
+    preferred_genres = mood_analysis.get('preferred_genres', [])
+    
+    external_playlists = get_context_playlists(sp, context, preferred_genres)
+    external_tracks = []
+    
+    for playlist_id in external_playlists:
+        try:
+            tracks = fetch_playlist_tracks(sp, playlist_id, max_n=50)
+            external_tracks.extend(tracks)
+            if len(external_tracks) >= 200:
+                break
+        except Exception as e:
+            print(f"獲取歌單 {playlist_id} 失敗: {e}")
+            continue
+    
+    # 4. 獲取音訊特徵
+    all_track_ids = []
+    for track in user_tracks + external_tracks:
+        track_id = track.get('id')
+        if track_id and len(track_id) == 22:
+            all_track_ids.append(track_id)
+    
+    # 去重
+    all_track_ids = list(set(all_track_ids))[:300]  # 限制數量避免 API 限制
+    features_map = audio_features_map(sp, all_track_ids)
+    
+    # 5. 評分和排序
+    def score_track(track):
+        track_id = track.get('id')
+        if not track_id or track_id not in features_map:
+            return 0.0
+        return calculate_track_similarity(features_map[track_id], mood_analysis)
+    
+    # 對使用者和外部音樂分別評分
+    user_scored = [(score_track(t), t) for t in user_tracks]
+    user_scored.sort(key=lambda x: x[0], reverse=True)
+    
+    external_scored = [(score_track(t), t) for t in external_tracks]
+    external_scored.sort(key=lambda x: x[0], reverse=True)
+    
+    # 6. 選擇最終歌單 (3 familiar + 7 new)
+    user_library_ids = {t.get('id') for t in user_tracks}
+    
+    # 選擇熟悉歌曲 (最多3首)
+    familiar = []
+    for score, track in user_scored[:10]:  # 從前10首中選
+        if len(familiar) < 3 and track.get('id'):
+            track['source'] = 'familiar'
+            familiar.append(track)
+    
+    # 選擇新歌曲 (最多7首，排除使用者已有的)
+    new_tracks = []
+    for score, track in external_scored:
+        if len(new_tracks) >= 7:
+            break
+        track_id = track.get('id')
+        if track_id and track_id not in user_library_ids:
+            track['source'] = 'new'
+            new_tracks.append(track)
+    
+    # 7. 確保多樣性並混合
+    final_playlist = familiar + new_tracks
+    final_playlist = ensure_diversity(final_playlist, max_per_artist=2)
+    
+    # 8. 補足到10首 (如果不夠的話)
+    if len(final_playlist) < 10:
+        additional_externals = [t for s, t in external_scored[len(new_tracks):]]
+        additional_diverse = ensure_diversity(additional_externals, max_per_artist=1)
+        
+        for track in additional_diverse:
+            if len(final_playlist) >= 10:
+                break
+            if track.get('id') not in [t.get('id') for t in final_playlist]:
+                track['source'] = 'additional'
+                final_playlist.append(track)
+    
+    return final_playlist[:10], mood_analysis
+
+# 在你的主要 recommend 函數中替換原本的邏輯：
+def improved_recommend_logic(sp, text):
+    """
+    替換原本的推薦邏輯
+    """
     try:
-        # 1) 收集候選池
-        params = map_text_to_params(text)
-        user_pool = collect_user_tracks(sp, max_n=150)
-        ext_pool  = collect_external_tracks(sp, max_n=300)
-        if not user_pool and not ext_pool:
-            return "沒有可加入的歌曲。<a href='/recommend?preview=1'>返回</a>"
-
-        # 收集有效 track id，最多 300
-        ids, seen = [], set()
-        for t in (user_pool + ext_pool):
-            tid = t.get("id")
-            if isinstance(tid, str) and len(tid) == 22 and tid not in seen:
-                ids.append(tid)
-                seen.add(tid)
-                if len(ids) >= 300:
-                    break
-
-        feats = audio_features_map(sp, ids)
-
-        # 2) 語意 + 特徵排分
-        all_candidates = user_pool + ext_pool
-        sem_map = build_semantic_map(text, all_candidates, feats)
-
-        user_candidates = rank_pool_by_semantic_and_features(
-            user_pool, feats, sem_map, params, top_n=10
-        )
-        ext_candidates = rank_pool_by_semantic_and_features(
-            ext_pool, feats, sem_map, params, top_n=50
-        )
-
-        def _safe_artist_id(tr):
-            a = tr.get("artists") or tr.get("artist") or []
-            if isinstance(a, list) and a:
-                first = a[0]
-                return first.get("id") if isinstance(first, dict) else None
-            if isinstance(a, dict):
-                return a.get("id")
-            return None
-
-        user_all_ids = {
-            t.get("id") for t in user_pool
-            if isinstance(t.get("id"), str) and len(t.get("id")) == 22
-        }
-
-        used = set()
-
-        # 3) 3 熟悉 + 7 新歌（不硬塞）
-        anchors = []
-        for tr in user_candidates:
-            tid = tr.get("id")
-            if not isinstance(tid, str) or len(tid) != 22 or tid in used:
-                continue
-            tr["source"] = "user"
-            anchors.append(tr)
-            used.add(tid)
-            if len(anchors) >= 3:
-                break
-
-        ext_chosen, seen_artists = [], set()
-        for tr in ext_candidates:
-            if len(ext_chosen) >= 7:
-                break
-            tid = tr.get("id")
-            if not isinstance(tid, str) or len(tid) != 22:
-                continue
-            if tid in used or tid in user_all_ids:
-                continue
-            aid = _safe_artist_id(tr)
-            if aid and aid in seen_artists:
-                continue
-            seen_artists.add(aid)
-            tr["source"] = "external"
-            ext_chosen.append(tr)
-            used.add(tid)
-
-        if len(ext_chosen) < 7:
-            for tr in ext_candidates:
-                if len(ext_chosen) >= 7:
-                    break
-                tid = tr.get("id")
-                if not isinstance(tid, str) or len(tid) != 22 or tid in used:
-                    continue
-                aid = _safe_artist_id(tr)
-                if aid and aid in seen_artists:
-                    continue
-                seen_artists.add(aid)
-                tr["source"] = "external"
-                ext_chosen.append(tr)
-                used.add(tid)
-
-        mixed = anchors + ext_chosen
-
-        if len(mixed) < 10:
-            for tr in ext_candidates:
-                if len(mixed) >= 10:
-                    break
-                tid = tr.get("id")
-                if not isinstance(tid, str) or len(tid) != 22 or tid in used:
-                    continue
-                tr["source"] = "external"
-                mixed.append(tr)
-                used.add(tid)
-
-        if len(mixed) < 10:
-            for tr in user_candidates:
-                if len(mixed) >= 10:
-                    break
-                tid = tr.get("id")
-                if not isinstance(tid, str) or len(tid) != 22 or tid in used:
-                    continue
-                tr["source"] = "user"
-                mixed.append(tr)
-                used.add(tid)
-
-        top10 = mixed[:10]
-
-        # 4) 建立歌單（公開/私人 由按鈕決定）
-        user = sp.current_user()
-        user_id = (user or {}).get("id")
-        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-        title = f"Mooodyyy · {ts} UTC"
-        desc  = f"情境：{text}（最多 3 首來自個人曲庫 + 其餘外部）"
-
-        playlist = sp.user_playlist_create(
-            user=user_id,
-            name=title,
-            public=(mode == "public"),
-            description=desc
-        )
-        sp.playlist_add_items(playlist_id=playlist["id"], items=[t["id"] for t in top10])
-        url = (playlist.get("external_urls") or {}).get("spotify", "#")
-
-        # 成功頁（保留，方便從預覽模式回來）
-        items_html = []
-        for i, tr in enumerate(top10, 1):
-            nm = tr.get("name", "")
-            artists = ", ".join(a.get("name", "") for a in tr.get("artists", []))
-            u = (tr.get("external_urls") or {}).get("spotify", "#")
-            src = tr.get("source", "")
-            badge = "（你的曲庫）" if src == "user" else "（新探索）"
-            items_html.append(f"<li>{i:02d}. <a href='{u}' target='_blank'>{artists} — {nm}</a> {badge}</li>")
-
-        return f"""
-            <h2>✅ 已建立歌單：<a href='{url}' target='_blank'>{title}</a></h2>
-            <p>模式：{"公開" if mode=="public" else "私人"}</p>
-            <p>情境：{text}</p>
-            <h3>曲目：</h3>
-            <ol>{''.join(items_html)}</ol>
-            <p><a href='/recommend?preview=1'>↩︎ 回預覽頁</a> ｜ <a href='/welcome'>🏠 回首頁</a></p>
-        """
-
+        playlist, analysis = generate_smart_playlist(sp, text)
+        
+        # 記錄分析結果 (用於除錯)
+        print(f"分析結果: {analysis}")
+        print(f"生成歌單: {len(playlist)} 首")
+        familiar_count = len([t for t in playlist if t.get('source') == 'familiar'])
+        new_count = len([t for t in playlist if t.get('source') == 'new'])
+        print(f"熟悉: {familiar_count}, 新歌: {new_count}")
+        
+        return playlist
+        
     except Exception as e:
-        print(f"❌ create_playlist error: {e}")
-        return (
-            "<h2>❌ 建立歌單失敗</h2>"
-            f"<p>錯誤訊息：{str(e)}</p>"
-            "<a href='/recommend?preview=1'>返回</a>"
-        )
-
-
-@app.route("/logout")
-def logout():
-    session.clear()
-    return redirect(url_for("home"))
-
-
-@app.route("/ping")
-def ping():
-    return "PING OK", 200
-
-
-@app.route("/env")
-def env_show():
-    v = os.environ.get("SPOTIPY_REDIRECT_URI", "<none>")
-    return f"[{v}] len={len(v)}", 200
-
-
-if __name__ == "__main__":
-    PORT = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=PORT)
+        print(f"推薦邏輯錯誤: {e}")
+        raise

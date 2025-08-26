@@ -494,6 +494,67 @@ def item_li(i, tr):
     url = (tr.get("external_urls") or {}).get("spotify", "#")
     return f"<li style='margin:8px 0; list-style:none;'>{i:02d}. <a href='{url}' target='_blank' style='color:#1DB954'><strong>{artists}</strong> - {name}</a></li>"
 
+# ========= 新增：依情境切換外部來源 =========
+def collect_external_tracks_by_category(sp, text: str, max_n: int = 200):
+    """
+    根據輸入文字 (text) 判斷情境，選取不同類別的 Spotify playlist 來抓歌。
+    抓不到某個歌單不會整個失敗，會繼續其他清單。
+    """
+    text = (text or "").lower()
+
+    # 1) 先用很直覺的關鍵詞判斷情境
+    if any(k in text for k in ["party", "派對", "嗨", "開心", "快樂"]):
+        category = "party"
+        playlist_ids = [
+            "37i9dQZF1DX0BcQWzuB7ZO",  # Dance Party
+            "37i9dQZF1DXaXB8fQg7xif",  # EDM
+        ]
+    elif any(k in text for k in ["sad", "傷心", "難過", "哭", "失戀", "emo"]):
+        category = "sad"
+        playlist_ids = [
+            "37i9dQZF1DX7qK8ma5wgG1",  # Sad Songs
+            "37i9dQZF1DX3YSRoSdA634",  # Deep Dark Indie
+        ]
+    elif any(k in text for k in ["chill", "放鬆", "冷靜", "悠閒", "輕鬆"]):
+        category = "chill"
+        playlist_ids = [
+            "37i9dQZF1DX4WYpdgoIcn6",  # Chill Hits
+            "37i9dQZF1DWUvQoIOFMFUT",  # Lofi Chill
+        ]
+    elif any(k in text for k in ["focus", "讀書", "專注", "工作", "coding", "專心"]):
+        category = "focus"
+        playlist_ids = [
+            "37i9dQZF1DX8Uebhn9wzrS",  # Focus
+            "37i9dQZF1DX9sIqqvKsjG8",  # Instrumental Study
+        ]
+    else:
+        category = "default"
+        playlist_ids = [
+            "37i9dQZF1DXcBWIGoYBM5M",  # Today's Top Hits
+            "37i9dQZF1DX1s9knjP51Oa",  # Hot Hits
+        ]
+
+    print(f"[collect_external_tracks_by_category] 情境分類: {category}")
+
+    # 2) 依選到的歌單列表把歌撈出來
+    tracks = []
+    for pid in playlist_ids:
+        try:
+            pl = sp.playlist_items(pid, additional_types=["track"], market="TW")
+            for item in pl.get("items", []):
+                tr = item.get("track")
+                if tr and isinstance(tr.get("id"), str):
+                    tracks.append(tr)
+                    if len(tracks) >= max_n:
+                        break
+        except Exception as e:
+            print(f"[warn] 撈 playlist {pid} 失敗: {e}")
+        if len(tracks) >= max_n:
+            break
+
+    return tracks[:max_n]
+# ========= 新增結束 =========
+
 # ======================================================
 # Routes
 # ======================================================
@@ -590,7 +651,7 @@ def recommend():
     try:
         # 1) 收集候選池
         user_pool = collect_user_tracks(sp, max_n=150)
-        ext_pool  = collect_external_tracks(sp, max_n=300)
+        ext_pool  = collect_external_tracks_by_category(sp, text, max_n=300)
 
         if not user_pool and not ext_pool:
             return (
@@ -813,7 +874,7 @@ def create_playlist():
         # 1) 收集候選池
         params = map_text_to_params(text)
         user_pool = collect_user_tracks(sp, max_n=150)
-        ext_pool  = collect_external_tracks(sp, max_n=300)
+        ext_pool  = collect_external_tracks_by_category(sp, text, max_n=300)
         if not user_pool and not ext_pool:
             return "沒有可加入的歌曲。<a href='/recommend?preview=1'>返回</a>"
 

@@ -184,116 +184,6 @@ def rank_pool_by_semantic_and_features(pool: List[Dict], feats_map: Dict[str, Di
     return scored[:top_n]
 # ========= [新增工具結束] =========
 
-def _track_desc(track: Dict, feat: Dict) -> str:
-    """把一首歌轉成一段可被 embedding 的簡短文字描述"""
-    name = track.get("name", "")
-    artists = ", ".join([a.get("name", "") for a in (track.get("artists") or [])])
-    words = " ".join(_feature_words(feat))
-    return f"{name} by {artists}. {words}".strip()
-
-
-def _cosine(a: List[float], b: List[float]) -> float:
-    """不依賴 numpy 的 cosine 相似度"""
-    dot = sum((x*y for x, y in zip(a, b)))
-    na = math.sqrt(sum((x*x for x in a))) + 1e-8
-    nb = math.sqrt(sum((y*y for y in b))) + 1e-8
-    return dot / (na * nb)
-
-
-def _embed_texts(texts: List[str]) -> List[List[float]]:
-    """
-    做文字 embedding（自動偵測新/舊版 openai 套件；失敗就回空）
-    你環境要有 OPENAI_API_KEY
-    """
-    try:
-        # 新版 openai 套件
-        from openai import OpenAI
-        client = OpenAI()
-        res = client.embeddings.create(model="text-embedding-3-small", input=texts)
-        return [d.embedding for d in res.data]
-    except Exception:
-        try:
-            # 舊版 openai 套件
-            import openai
-            res = openai.Embedding.create(model="text-embedding-ada-002", input=texts)
-            return [d["embedding"] for d in res["data"]]
-        except Exception as e:
-            print(f"[warn] embedding failed: {e}")
-            return []
-
-
-def _numeric_affinity(feat: Dict, params: Dict) -> float:
-    """
-    用音樂特徵算一個 0~1 的接近度：energy/valence/danceability/acousticness/tempo
-    有就算、沒有就跳過；最後取平均。
-    """
-    if not feat:
-        return 0.5
-    score_sum, cnt = 0.0, 0
-
-    def closeness(v, t, scale=1.0):
-        # v, t 在 0~1 範圍時直接用；tempo 用 scale 正規化
-        return max(0.0, 1.0 - abs((v - t) / scale))
-
-    for k in ("energy", "valence", "danceability", "acousticness"):
-        vk = feat.get(k); tk = params.get(f"target_{k}")
-        if vk is not None and tk is not None:
-            score_sum += closeness(vk, tk, 1.0); cnt += 1
-
-    # tempo：以 120 bpm 當 1 個 scale（可調）
-    vtempo = feat.get("tempo"); ttempo = params.get("target_tempo")
-    if vtempo and ttempo:
-        score_sum += closeness(vtempo, ttempo, 120.0); cnt += 1
-    elif vtempo and (params.get("min_tempo") or params.get("max_tempo")):
-        # 若只有區間：落在區間內給 1，偏離則線性遞減
-        lo = params.get("min_tempo", vtempo); hi = params.get("max_tempo", vtempo)
-        if lo <= vtempo <= hi:
-            score_sum += 1.0
-        else:
-            edge = lo if vtempo < lo else hi
-            score_sum += max(0.0, 1.0 - abs(vtempo - edge) / 120.0)
-        cnt += 1
-
-    return (score_sum / cnt) if cnt else 0.5
-
-
-def build_semantic_map(prompt: str, tracks: List[Dict], feats_map: Dict[str, Dict]) -> Dict[str, float]:
-    """
-    回傳 {track_id: 語意相似度(0~1)}。
-    實作：把每首歌轉成短描述 → 和 prompt 一起丟 embedding → 計算 cosine。
-    如果 embedding 失敗，回傳所有 0.5（不中斷流程）。
-    """
-    # 準備描述
-    tids, descs = [], []
-    for tr in tracks:
-        tid = tr.get("id")
-        if isinstance(tid, str) and len(tid) == 22 and tid in feats_map:
-            tids.append(tid)
-            descs.append(_track_desc(tr, feats_map.get(tid)))
-
-    if not tids:
-        return {}
-
-    embs = _embed_texts([prompt] + descs)
-    if not embs or len(embs) != (1 + len(descs)):
-        # 失敗：給所有人 0.5
-        print("[warn] embedding empty or length mismatch; fallback to 0.5")
-        return {tid: 0.5 for tid in tids}
-
-    q = embs[0]
-    sims = {}
-    for i, tid in enumerate(tids):
-        sims[tid] = max(0.0, min(1.0, _cosine(q, embs[i + 1])))
-
-    return sims
-
-
-def rank_pool_by_semantic_and_features(pool: List[Dict], feats_map: Dict[str, Dict],
-                                       sem_map: Dict[str, float], params: Dict,
-                                       top_n: int) -> List[Dict]:
-    """
-    對 pool 排序
-
 def oauth():
     """Create a SpotifyOAuth instance. Redirect URI must exactly match Spotify Dashboard."""
     return SpotifyOAuth(
@@ -904,8 +794,10 @@ def recommend():
         print(f"❌ recommend error: {e}")
         return (
             "<h2>❌ 系統暫時出錯</h2>"
-
-
+            f"<p>錯誤訊息：{str(e)}</p>"
+            "<a href='/welcome'>回首頁</a>"
+        )
+        
 @app.route("/create_playlist", methods=["POST"])
 def create_playlist():
     sp = get_spotify_client()

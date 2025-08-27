@@ -9,12 +9,15 @@ from typing import List, Dict
 from spotipy.exceptions import SpotifyException
 from flask import request, redirect, url_for
 from datetime import datetime
+from flask import session
+
 
 
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "devsecret")
 SCOPE = "user-library-read user-top-read playlist-modify-public playlist-modify-private"
+app.secret_key = "replace-with-a-long-random-secret"
 
 # ======================================================
 # Flask & Spotify OAuth setup
@@ -703,18 +706,23 @@ def recommend():
     if not sp:
         return redirect(url_for("home"))
 
-    # 取得情境文字（POST 優先、GET 次之）
+    # 取得情境文字（POST 優先）
     text = (request.form.get("text") or request.args.get("text") or "").strip()
     if not text:
         return redirect(url_for("welcome"))
 
-    try:
-        # === 1) 收集候選池（沿用你原本的方法） ===
-        params = map_text_to_params(text)
-        user_pool = collect_user_tracks(sp, max_n=150)                   # 你的曲庫候選
-        ext_pool  = collect_external_tracks_by_category(sp, text, 300)   # 外部候選
+    # === (A) 讀取該情境的歷史（跨多次避重） ===
+    ctx_key = (" ".join(text.lower().split()))[:80]  # 簡單壓縮情境 key
+    history = session.get("hist", {})                # { ctx_key: [track_id, ...] }
+    recent_ids = history.get(ctx_key, [])[:40]       # 最多保留 40 首（約 4 批）
 
-        # === 2) 準備特徵與語意分數（沿用你原本的方法） ===
+    try:
+        # === 1) 收集候選池（沿用你的方法） ===
+        params    = map_text_to_params(text)
+        user_pool = collect_user_tracks(sp, max_n=150)                    # 你的曲庫
+        ext_pool  = collect_external_tracks_by_category(sp, text, 300)    # 外部
+
+        # === 2) 特徵 & 語意分數（沿用你的方法） ===
         ids_for_feat = []
         for tr in (user_pool + ext_pool):
             tid = tr.get("id")
@@ -725,19 +733,33 @@ def recommend():
         feats   = audio_features_map(sp, ids_for_feat)
         sem_map = build_semantic_map(text, user_pool + ext_pool, feats)
 
-        # === 3) 排序（沿用你原本的方法） ===
+        # === 3) 排序（沿用你的方法） ===
         user_candidates = rank_pool_by_semantic_and_features(user_pool, feats, sem_map, params, top_n=10)
         ext_candidates  = rank_pool_by_semantic_and_features(ext_pool,  feats, sem_map, params, top_n=50)
 
-        # === 4) 混合：最多 3 首你的曲庫 + 最多 7 首外部（沿用你的策略） ===
-        used, anchors = set(), []
+        # 輕度打散，增加差異
+        random.shuffle(user_candidates)
+        random.shuffle(ext_candidates)
+
+        # 讀取上一批要避開的歌曲（由預覽頁傳回）
+        avoid_raw = (request.form.get("avoid") or request.args.get("avoid") or "").strip()
+        avoid_ids = set(i for i in avoid_raw.split(",") if len(i) == 22) if avoid_raw else set()
+
+        # 你的曲庫所有 id（避免外部重複你的曲庫曲目）
+        user_all_ids = {
+            t.get("id") for t in user_pool
+            if isinstance(t.get("id"), str) and len(t.get("id")) == 22
+        }
+
+        # === 4) 混合：3 首你的曲庫 + 7 首外部（避開 avoid_ids 與 recent_ids） ===
+        used    = set(avoid_ids) | set(recent_ids)
+        anchors = []
         for tr in user_candidates:
             tid = tr.get("id")
             if isinstance(tid, str) and len(tid) == 22 and tid not in used:
                 anchors.append(tr); used.add(tid)
-                if len(anchors) >= 3: break
-
-        user_all_ids = {t.get("id") for t in user_pool if isinstance(t.get("id"), str) and len(t.get("id")) == 22}
+                if len(anchors) >= 3:
+                    break
 
         def _first_artist_id(tr):
             a = tr.get("artists") or tr.get("artist") or []
@@ -749,31 +771,37 @@ def recommend():
 
         ext_chosen, seen_artists = [], set()
         for tr in ext_candidates:
-            if len(ext_chosen) >= 7: break
+            if len(ext_chosen) >= 7:
+                break
             tid = tr.get("id")
-            if not (isinstance(tid, str) and len(tid) == 22): continue
-            if tid in used or tid in user_all_ids: continue
+            if not (isinstance(tid, str) and len(tid) == 22):
+                continue
+            if tid in used or tid in user_all_ids:
+                continue
             aid = _first_artist_id(tr)
-            if aid and aid in seen_artists: continue
+            if aid and aid in seen_artists:
+                continue
             seen_artists.add(aid)
             ext_chosen.append(tr); used.add(tid)
 
         # 不足就放寬補滿到 7
         if len(ext_chosen) < 7:
             for tr in ext_candidates:
-                if len(ext_chosen) >= 7: break
+                if len(ext_chosen) >= 7:
+                    break
                 tid = tr.get("id")
-                if not (isinstance(tid, str) and len(tid) == 22) or tid in used: continue
+                if not (isinstance(tid, str) and len(tid) == 22) or tid in used:
+                    continue
                 ext_chosen.append(tr); used.add(tid)
 
         top10 = (anchors + ext_chosen)[:10]
 
-        # === 5) 預覽頁（精簡顯示） ===
+        # === 5) 預覽頁（精簡顯示、無序號） ===
         preview = (request.values.get("preview") or "").strip()
         if preview == "1":
-            # 生成乾淨的清單：1. {Artist} — {Name}
+            # 產生清單：只顯示「歌手 — 歌名」
             items = []
-            for i, tr in enumerate(top10, 1):
+            for tr in top10:
                 name = tr.get("name", "")
                 arts = tr.get("artists", [])
                 if isinstance(arts, list) and arts and isinstance(arts[0], dict):
@@ -783,11 +811,18 @@ def recommend():
                 else:
                     artists = str(arts) if arts else ""
                 url = (tr.get("external_urls") or {}).get("spotify") or tr.get("url") or "#"
-                items.append(f"<li>{i}. <a href='{url}' target='_blank'>{artists} — {name}</a></li>")
+                items.append(f"<li><a href='{url}' target='_blank'>{artists} — {name}</a></li>")
             songs_html = "\n".join(items)
 
+            # 當前這批歌曲的 IDs（用於存歌單 & 下次避開）
             ids_str   = ",".join([t.get("id") for t in top10 if isinstance(t.get("id"), str) and len(t.get("id")) == 22])
             safe_text = text.replace("'", "&#39;")
+
+            # === (B) 把這一批寫回情境歷史（新在前、去重保序、最多 40） ===
+            cur_ids = [t.get("id") for t in top10 if isinstance(t.get("id"), str) and len(t.get("id")) == 22]
+            old_ids = [x for x in recent_ids if x not in cur_ids]
+            history[ctx_key] = (cur_ids + old_ids)[:40]
+            session["hist"] = history
 
             page = f"""
             <!doctype html>
@@ -814,11 +849,14 @@ def recommend():
                   {songs_html}
                 </ol>
                 <div style="margin:20px 0; display:flex; gap:10px; flex-wrap:wrap;">
+                  <!-- 重新生成：帶本批 ids 作為 avoid，避免重複 -->
                   <form method="POST" action="/recommend" style="display:inline;">
                     <input type="hidden" name="text" value="{safe_text}">
                     <input type="hidden" name="preview" value="1">
+                    <input type="hidden" name="avoid" value="{ids_str}">
                     <button type="submit" class="btn-regen">🔄 重新生成</button>
                   </form>
+                  <!-- 存到 Spotify（私人） -->
                   <form method="POST" action="/create_playlist" style="display:inline;">
                     <input type="hidden" name="text" value="{safe_text}">
                     <input type="hidden" name="track_ids" value="{ids_str}">
@@ -832,7 +870,7 @@ def recommend():
             """
             return page
 
-        # 非預覽：直接建「私人」歌單後跳轉（保留舊行為以向後相容）
+        # 非預覽：直接建私人歌單（向後相容）
         user   = sp.current_user(); user_id = (user or {}).get("id")
         ts     = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
         title  = f"Mooodyyy · {ts} UTC"

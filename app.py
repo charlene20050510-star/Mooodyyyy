@@ -10,8 +10,7 @@ from spotipy.exceptions import SpotifyException
 from flask import request, redirect, url_for
 from datetime import datetime
 from flask import session
-
-
+import random
 
 
 app = Flask(__name__)

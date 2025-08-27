@@ -501,63 +501,115 @@ def audio_features_map(sp, track_ids, batch_size: int = 50):
     print(f"[features] ok={len(feats)}  skipped={len(set(skipped))}")
     return feats
 
-# ========= 依情境切換外部來源 =========
+# ========= 依情境切換外部來源（耐撞版：歌單→搜尋→推薦 三層退場） =========
 def collect_external_tracks_by_category(sp, text: str, max_n: int = 200):
     """
-    依輸入文字分類，改抓不同類型的 Spotify 歌單作為外部候選池。
+    依輸入文字分類，從：1) 精選歌單ID → 2) 站內搜尋歌單 → 3) Spotify Recommendations
+    三層來源抓外部歌曲；任何一層抓到就先收，盡量湊滿 max_n。
     """
     text = (text or "").lower()
 
+    # 1) 分類
     if any(k in text for k in ["party", "派對", "嗨", "開心", "快樂"]):
         category = "party"
-        playlist_ids = [
-            "37i9dQZF1DX0BcQWzuB7ZO",  # Dance Party
-            "37i9dQZF1DXaXB8fQg7xif",  # EDM
-        ]
     elif any(k in text for k in ["sad", "傷心", "難過", "哭", "失戀", "emo"]):
         category = "sad"
-        playlist_ids = [
-            "37i9dQZF1DX7qK8ma5wgG1",  # Sad Songs
-            "37i9dQZF1DX3YSRoSdA634",  # Deep Dark Indie
-        ]
     elif any(k in text for k in ["chill", "放鬆", "冷靜", "悠閒", "輕鬆"]):
         category = "chill"
-        playlist_ids = [
-            "37i9dQZF1DX4WYpdgoIcn6",  # Chill Hits
-            "37i9dQZF1DWUvQoIOFMFUT",  # Lofi Chill
-        ]
     elif any(k in text for k in ["focus", "讀書", "專注", "工作", "coding", "專心"]):
         category = "focus"
-        playlist_ids = [
-            "37i9dQZF1DX8Uebhn9wzrS",  # Focus
-            "37i9dQZF1DX9sIqqvKsjG8",  # Instrumental Study
-        ]
     else:
         category = "default"
-        playlist_ids = [
-            "37i9dQZF1DXcBWIGoYBM5M",  # Today's Top Hits
-            "37i9dQZF1DX1s9knjP51Oa",  # Hot Hits Taiwan
-        ]
 
-    print(f"[collect_external_tracks_by_category] 情境分類: {category}")
+    print(f"[external] category={category}")
+
+    # 2) 第一層：我們手選的公開歌單 IDs（可能因區域/下架失效，所以只是優先嘗試）
+    curated = {
+        "party":   ["37i9dQZF1DX0BcQWzuB7ZO", "37i9dQZF1DXaXB8fQg7xif"],
+        "sad":     ["37i9dQZF1DX7qK8ma5wgG1", "37i9dQZF1DX3YSRoSdA634"],
+        "chill":   ["37i9dQZF1DX4WYpdgoIcn6", "37i9dQZF1DWUvQoIOFMFUT"],
+        "focus":   ["37i9dQZF1DX8Uebhn9wzrS", "37i9dQZF1DX9sIqqvKsjG8"],
+        "default": ["37i9dQZF1DXcBWIGoYBM5M", "37i9dQZF1DX1s9knjP51Oa"],
+    }
+    playlist_ids = curated.get(category, curated["default"])
 
     tracks = []
-    for pid in playlist_ids:
+
+    def _pull_from_playlists(pids, budget):
+        got = []
+        for pid in pids:
+            if len(got) >= budget:
+                break
+            try:
+                # 注意：不加 market 限制，避免整包被過濾成空
+                pl = sp.playlist_items(pid, additional_types=["track"], limit=100)
+                for item in (pl or {}).get("items", []):
+                    tr = (item or {}).get("track")
+                    if tr and isinstance(tr.get("id"), str):
+                        got.append(tr)
+                        if len(got) >= budget:
+                            break
+            except Exception as e:
+                print(f"[warn] pull playlist {pid} failed: {e}")
+        return got
+
+    # 第一層：嘗試精選歌單
+    tracks += _pull_from_playlists(playlist_ids, max_n)
+    print(f"[external] curated_got={len(tracks)}")
+
+    # 3) 第二層：站內搜尋相關歌單關鍵字（避免精選歌單失效/區域差異）
+    if len(tracks) < max_n // 3:
+        query_map = {
+            "party":  ["edm", "dance party", "party pop"],
+            "sad":    ["sad songs", "mellow", "heartbreak"],
+            "chill":  ["chill", "lofi", "acoustic chill"],
+            "focus":  ["focus", "study", "instrumental"],
+            "default":["hot hits", "pop hits"],
+        }
+        queries = query_map.get(category, query_map["default"])
+        found_pids = []
+        for q in queries:
+            try:
+                res = sp.search(q=q, type="playlist", limit=3)
+                pitems = (((res or {}).get("playlists") or {}).get("items") or [])
+                for pl in pitems:
+                    pid = (pl or {}).get("id")
+                    if pid: found_pids.append(pid)
+            except Exception as e:
+                print(f"[warn] search playlists '{q}' failed: {e}")
+        if found_pids:
+            need = max_n - len(tracks)
+            tracks += _pull_from_playlists(found_pids, need)
+            print(f"[external] after_search_got={len(tracks)}")
+
+    # 4) 第三層：Spotify Recommendations API（用 genre 當種子）
+    if len(tracks) == 0:
+        seed_map = {
+            "party":  ["dance", "edm", "pop"],
+            "sad":    ["sad", "acoustic", "mellow"],
+            "chill":  ["chill", "ambient", "lo-fi"],
+            "focus":  ["study", "instrumental", "ambient"],
+            "default":["pop", "indie", "rock"],
+        }
+        seeds = seed_map.get(category, seed_map["default"])[:2]
         try:
-            pl = sp.playlist_items(pid, additional_types=["track"], market="TW")
-            for item in (pl or {}).get("items", []):
-                tr = (item or {}).get("track")
+            rec = sp.recommendations(seed_genres=seeds, limit=min(100, max_n))
+            for tr in (rec or {}).get("tracks", []):
                 if tr and isinstance(tr.get("id"), str):
                     tracks.append(tr)
-                    if len(tracks) >= max_n:
-                        break
+            print(f"[external] recommendations_got={len(tracks)} seeds={seeds}")
         except Exception as e:
-            print(f"[warn] 撈 playlist {pid} 失敗: {e}")
-        if len(tracks) >= max_n:
-            break
+            print(f"[warn] recommendations failed: {e}")
 
-    return tracks[:max_n]
+    # 去重，保險起見
+    dedup, seen = [], set()
+    for tr in tracks:
+        tid = tr.get("id")
+        if tid and tid not in seen:
+            dedup.append(tr); seen.add(tid)
 
+    print(f"[external] total={len(dedup)} (before cap {max_n})")
+    return dedup[:max_n]
 # ======================================================
 # Routes
 # ======================================================

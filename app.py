@@ -656,25 +656,25 @@ def welcome():
       <meta charset='UTF-8' />
       <title>Mooodyyy - AI 音樂情境推薦</title>
       <style>
-        body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:linear-gradient(135deg,#1DB954,#1ed760); color:#fff; margin:0; padding:20px; min-height:100vh; }}
+        body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Noto Sans TC',sans-serif; background:linear-gradient(135deg,#0f0f13,#1b1f2a); color:#fff; margin:0; padding:20px; min-height:100vh; }}
         .container {{ max-width:640px; margin:0 auto; }}
         .card {{ background:rgba(255,255,255,0.1); border-radius:16px; padding:28px; backdrop-filter:blur(10px); }}
-        textarea {{ width:100%; box-sizing:border-box; border:none; border-radius:10px; padding:14px; font-size:16px; resize:vertical; }}
-        button {{ background:#FF6B6B; color:#fff; border:none; padding:12px 20px; border-radius:8px; font-size:16px; cursor:pointer; margin-top:10px; }}
-        button:hover {{ background:#ff5252; }}
-        a {{ color:#fff; }}
+        textarea {{ width:100%; box-sizing:border-box; border:none; outline:none; border-radius:10px; padding:14px; font-size:16px; resize:vertical; }}
+        button {{ background:#FF6B6B; color:#fff; border:none; border-radius:8px; padding:12px 16px; cursor:pointer; font-weight:600; }}
+        a {{ color:#9BE3FF; text-decoration:none; }}
       </style>
     </head>
     <body>
-      <div class='container'>
-        <h1>🎵 Hello {name}</h1>
-        <p>歡迎來到 Mooodyyy — 用一句話描述你的情境，我來幫你配歌。</p>
-
-        <div class='card'>
-          <h2>🎯 情境推薦</h2>
-          <p>輸入你的心情或場景，例如：下雨夜的鋼琴、專心讀書的輕音樂、失戀的深夜車程⋯</p>
+      <div class="container">
+        <h1>🎧 Mooodyyy</h1>
+        <div class="card">
+          <p>嗨，{name}！描述你的情境，我會推薦合適的 Top 10：<br>
+          例如：下雨夜的鋼琴、專心讀書的輕音樂、失戀的深夜車程⋯</p>
           <form action='/recommend' method='post'>
-            <textarea name='text' rows='4' placeholder='例如：下班後的放鬆小酒館氛圍'></textarea><br/>
+            <textarea name='text' rows='4' placeholder='例如：下班後的放鬆小酒館氛圍'></textarea>
+            <!-- 預設走「先預覽」 -->
+            <input type='hidden' name='preview' value='1'>
+            <br/>
             <button type='submit'>生成 Top 10</button>
           </form>
         </div>
@@ -687,7 +687,6 @@ def welcome():
     </html>
     """
     return html
-
 
 @app.route("/recommend", methods=["GET", "POST"])
 def recommend():

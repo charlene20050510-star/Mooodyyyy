@@ -501,6 +501,62 @@ def audio_features_map(sp, track_ids, batch_size: int = 50):
     print(f"[features] ok={len(feats)}  skipped={len(set(skipped))}")
     return feats
 
+# ========= 依情境切換外部來源 =========
+def collect_external_tracks_by_category(sp, text: str, max_n: int = 200):
+    """
+    依輸入文字分類，改抓不同類型的 Spotify 歌單作為外部候選池。
+    """
+    text = (text or "").lower()
+
+    if any(k in text for k in ["party", "派對", "嗨", "開心", "快樂"]):
+        category = "party"
+        playlist_ids = [
+            "37i9dQZF1DX0BcQWzuB7ZO",  # Dance Party
+            "37i9dQZF1DXaXB8fQg7xif",  # EDM
+        ]
+    elif any(k in text for k in ["sad", "傷心", "難過", "哭", "失戀", "emo"]):
+        category = "sad"
+        playlist_ids = [
+            "37i9dQZF1DX7qK8ma5wgG1",  # Sad Songs
+            "37i9dQZF1DX3YSRoSdA634",  # Deep Dark Indie
+        ]
+    elif any(k in text for k in ["chill", "放鬆", "冷靜", "悠閒", "輕鬆"]):
+        category = "chill"
+        playlist_ids = [
+            "37i9dQZF1DX4WYpdgoIcn6",  # Chill Hits
+            "37i9dQZF1DWUvQoIOFMFUT",  # Lofi Chill
+        ]
+    elif any(k in text for k in ["focus", "讀書", "專注", "工作", "coding", "專心"]):
+        category = "focus"
+        playlist_ids = [
+            "37i9dQZF1DX8Uebhn9wzrS",  # Focus
+            "37i9dQZF1DX9sIqqvKsjG8",  # Instrumental Study
+        ]
+    else:
+        category = "default"
+        playlist_ids = [
+            "37i9dQZF1DXcBWIGoYBM5M",  # Today's Top Hits
+            "37i9dQZF1DX1s9knjP51Oa",  # Hot Hits Taiwan
+        ]
+
+    print(f"[collect_external_tracks_by_category] 情境分類: {category}")
+
+    tracks = []
+    for pid in playlist_ids:
+        try:
+            pl = sp.playlist_items(pid, additional_types=["track"], market="TW")
+            for item in (pl or {}).get("items", []):
+                tr = (item or {}).get("track")
+                if tr and isinstance(tr.get("id"), str):
+                    tracks.append(tr)
+                    if len(tracks) >= max_n:
+                        break
+        except Exception as e:
+            print(f"[warn] 撈 playlist {pid} 失敗: {e}")
+        if len(tracks) >= max_n:
+            break
+
+    return tracks[:max_n]
 
 # ======================================================
 # Routes

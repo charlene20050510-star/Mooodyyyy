@@ -12,11 +12,6 @@ import random, re
 from flask import request, redirect, url_for, session
 
 
-# Flask 啟動後只需設定一次
-app.secret_key = "replace-with-a-long-random-secret"
-
-
-
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "devsecret")

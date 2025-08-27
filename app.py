@@ -7,10 +7,15 @@ from spotipy.oauth2 import SpotifyOAuth
 import math
 from typing import List, Dict
 from spotipy.exceptions import SpotifyException
-from flask import request, redirect, url_for
 from datetime import datetime
-from flask import session
-import random
+import random, re
+from flask import request, redirect, url_for, session
+
+
+# Flask 啟動後只需設定一次
+app.secret_key = "replace-with-a-long-random-secret"
+
+
 
 
 app = Flask(__name__)
@@ -240,32 +245,55 @@ def get_spotify_client():
 # Simple rules → target features (can swap to embeddings later)
 # ======================================================
 
-def map_text_to_params(text):
-    t = (text or "").lower()
-    params = {
-        "target_energy": 0.5,
-        "target_valence": 0.5,
-        "target_tempo": 110.0,
-        "prefer_acoustic": False,
-        "prefer_instrumental": False,
-        "seed_genres": [],
-    }
-    if any(k in t for k in ["累", "疲", "sad", "lonely", "emo", "哭"]):
-        params.update({"target_energy": 0.2, "target_valence": 0.25, "target_tempo": 80})
-    if any(k in t for k in ["開心", "爽", "happy", "party", "嗨"]):
-        params.update({"target_energy": 0.8, "target_valence": 0.8, "target_tempo": 125})
-    if any(k in t for k in ["讀書", "專心", "focus", "工作", "coding"]):
-        params.update({"target_energy": 0.3, "target_valence": 0.5, "target_tempo": 90})
-    if any(k in t for k in ["爵士", "jazz"]):
-        params["seed_genres"].append("jazz")
-    if any(k in t for k in ["lofi", "lo-fi", "lo fi", "輕音"]):
-        params["seed_genres"].append("lo-fi")
-    if any(k in t for k in ["鋼琴", "piano", "acoustic"]):
-        params["prefer_acoustic"] = True
-    if any(k in t for k in ["純音樂", "instrumental"]):
-        params["prefer_instrumental"] = True
-    return params
+# === 風格詞彙 → 音訊特徵對映 ===
+STYLE_MAP = {
+    "lofi":       {"energy": (0.0, 0.4), "acousticness": (0.6, 1.0), "tempo": (60, 90)},
+    "jazz":       {"energy": (0.2, 0.6), "instrumentalness": (0.4, 1.0)},
+    "edm":        {"energy": (0.7, 1.0), "danceability": (0.7, 1.0), "tempo": (120, 150)},
+    "rock":       {"energy": (0.6, 1.0), "instrumentalness": (0.0, 0.5)},
+    "classical":  {"energy": (0.0, 0.3), "acousticness": (0.7, 1.0), "instrumentalness": (0.7, 1.0)},
+    "hip hop":    {"energy": (0.6, 0.9), "speechiness": (0.5, 1.0), "tempo": (80, 110)},
+    "r&b":        {"energy": (0.3, 0.7), "danceability": (0.5, 0.9)},
+    "rb":         {"energy": (0.3, 0.7), "danceability": (0.5, 0.9)},  # 容錯
+}
 
+def map_text_to_params(text: str) -> dict:
+    """
+    將使用者情境文字轉成「音訊特徵偏好」的參數範圍。
+    回傳格式示意：
+      {
+        "energy": (0.2, 0.6),
+        "danceability": (0.6, 1.0),
+        "acousticness": (0.5, 1.0),
+        "tempo": (90, 120),
+        ...
+      }
+    """
+    t = (text or "").lower()
+    params = {}
+
+    # 風格詞彙對映（可多個同時出現，後面命中的詞彙會覆蓋前者的同名鍵）
+    for key, feat in STYLE_MAP.items():
+        if key in t:
+            params.update(feat)
+
+    # 一些簡易關鍵詞微調（可自行增減）
+    if "睡覺" in t or "助眠" in t or "放鬆" in t or "冥想" in t:
+        params.setdefault("energy", (0.0, 0.4))
+        params.setdefault("acousticness", (0.5, 1.0))
+        params.setdefault("tempo", (55, 85))
+    if "讀書" in t or "專心" in t or "focus" in t:
+        params.setdefault("energy", (0.2, 0.5))
+        params.setdefault("instrumentalness", (0.3, 1.0))
+    if "運動" in t or "健身" in t or "跑步" in t or "workout" in t:
+        params.setdefault("energy", (0.7, 1.0))
+        params.setdefault("danceability", (0.6, 1.0))
+        params.setdefault("tempo", (120, 170))
+    if "爵士" in t:
+        params.setdefault("energy", (0.2, 0.6))
+        params.setdefault("instrumentalness", (0.4, 1.0))
+
+    return params
 
 # ======================================================
 # Spotify helpers (fetch pool, features, ranking)
@@ -705,42 +733,117 @@ def recommend():
     if not sp:
         return redirect(url_for("home"))
 
-    # 取得情境文字（POST 優先）
+    # ========= 小工具（封裝在 route 內，方便一次貼上） =========
+    _CJK_RE = re.compile(r'[\u4e00-\u9fff]')  # 中日韓漢字
+
+    def _lang_hint_from_text(text: str):
+        t = (text or "").lower()
+        if "英文" in t or "english" in t or "eng only" in t or "english only" in t:
+            return "en"
+        if "中文" in t or "華語" in t or "國語" in t or "chinese" in t:
+            return "zh"
+        return None
+
+    def _track_lang(tr: dict):
+        name = str(tr.get("name") or "")
+        artists = tr.get("artists") or []
+        artist_names = []
+        if isinstance(artists, list):
+            for a in artists:
+                artist_names.append(str(a.get("name") if isinstance(a, dict) else a))
+        else:
+            artist_names.append(str(artists))
+        s = name + " " + " ".join(artist_names)
+        return "zh" if _CJK_RE.search(s) else "en"
+
+    def _lang_filter(cands: list, want: str, keep_if_none=False):
+        if not want:
+            return cands
+        out = []
+        for tr in cands:
+            try:
+                l = _track_lang(tr)
+                if l == want or (keep_if_none and l is None):
+                    out.append(tr)
+            except Exception:
+                if keep_if_none:
+                    out.append(tr)
+        return out
+
+    def _weighted_pick(tracks, k=3):
+        """根據 _score 權重抽樣，避免永遠同幾首（高分仍較易被選）"""
+        bag = [t for t in tracks if isinstance(t.get("_score"), (int, float))]
+        if not bag:
+            return tracks[:k]
+        weights = [max(1e-6, t["_score"]) ** 2 for t in bag]
+        chosen, used = [], set()
+        for _ in range(min(k, len(bag))):
+            s = sum(weights)
+            r, acc, idx = random.random() * s, 0.0, 0
+            for i, w in enumerate(weights):
+                acc += w
+                if acc >= r:
+                    idx = i
+                    break
+            if bag[idx].get("id") in used:
+                for j in range(len(bag)):
+                    if bag[j].get("id") not in used:
+                        idx = j
+                        break
+            chosen.append(bag[idx]); used.add(bag[idx].get("id"))
+            del bag[idx]; del weights[idx]
+        return chosen
+
+    def _first_artist_id(tr):
+        a = tr.get("artists") or tr.get("artist") or []
+        if isinstance(a, list) and a and isinstance(a[0], dict):
+            return a[0].get("id")
+        if isinstance(a, dict):
+            return a.get("id")
+        return None
+
+    # ========= 取得情境文字 =========
     text = (request.form.get("text") or request.args.get("text") or "").strip()
     if not text:
         return redirect(url_for("welcome"))
 
-    # === (A) 讀取該情境的歷史（跨多次避重） ===
-    ctx_key = (" ".join(text.lower().split()))[:80]  # 簡單壓縮情境 key
-    history = session.get("hist", {})                # { ctx_key: [track_id, ...] }
-    recent_ids = history.get(ctx_key, [])[:40]       # 最多保留 40 首（約 4 批）
+    # ========= 情境歷史（跨多次避重） =========
+    ctx_key = (" ".join(text.lower().split()))[:80]
+    history = session.get("hist", {})              # { ctx_key: [track_id, ...] }
+    recent_ids = history.get(ctx_key, [])[:40]     # 最近 4 批（最多 40 首）
 
     try:
-        # === 1) 收集候選池（沿用你的方法） ===
+        # === 1) 收集候選池（縮小以加速） ===
         params    = map_text_to_params(text)
-        user_pool = collect_user_tracks(sp, max_n=150)                    # 你的曲庫
-        ext_pool  = collect_external_tracks_by_category(sp, text, 300)    # 外部
+        user_pool = collect_user_tracks(sp, max_n=100)
+        ext_pool  = collect_external_tracks_by_category(sp, text, 150)
 
-        # === 2) 特徵 & 語意分數（沿用你的方法） ===
+        # === 2) 特徵 & 語意分數 ===
         ids_for_feat = []
         for tr in (user_pool + ext_pool):
             tid = tr.get("id")
             if isinstance(tid, str) and len(tid) == 22:
                 ids_for_feat.append(tid)
-                if len(ids_for_feat) >= 300:
+                if len(ids_for_feat) >= 250:  # 上限 250 → 更快
                     break
         feats   = audio_features_map(sp, ids_for_feat)
         sem_map = build_semantic_map(text, user_pool + ext_pool, feats)
 
-        # === 3) 排序（沿用你的方法） ===
-        user_candidates = rank_pool_by_semantic_and_features(user_pool, feats, sem_map, params, top_n=10)
-        ext_candidates  = rank_pool_by_semantic_and_features(ext_pool,  feats, sem_map, params, top_n=50)
+        # === 3) 排序（top_n 放寬，給抽樣空間） ===
+        user_candidates = rank_pool_by_semantic_and_features(user_pool, feats, sem_map, params, top_n=20)
+        ext_candidates  = rank_pool_by_semantic_and_features(ext_pool,  feats, sem_map, params, top_n=200)
 
-        # 輕度打散，增加差異
+        # 輕度打散
         random.shuffle(user_candidates)
         random.shuffle(ext_candidates)
 
-        # 讀取上一批要避開的歌曲（由預覽頁傳回）
+        # === 3.5) 語言偏好（英文/中文） ===
+        want_lang = _lang_hint_from_text(text)  # 'en' / 'zh' / None
+        if want_lang in ("en", "zh"):
+            user_candidates = _lang_filter(user_candidates, want_lang)
+            ext_candidates  = _lang_filter(ext_candidates,  want_lang)
+
+        # 讀取上一批要避開（由預覽頁傳回）
         avoid_raw = (request.form.get("avoid") or request.args.get("avoid") or "").strip()
         avoid_ids = set(i for i in avoid_raw.split(",") if len(i) == 22) if avoid_raw else set()
 
@@ -750,24 +853,17 @@ def recommend():
             if isinstance(t.get("id"), str) and len(t.get("id")) == 22
         }
 
-        # === 4) 混合：3 首你的曲庫 + 7 首外部（避開 avoid_ids 與 recent_ids） ===
-        used    = set(avoid_ids) | set(recent_ids)
-        anchors = []
-        for tr in user_candidates:
-            tid = tr.get("id")
-            if isinstance(tid, str) and len(tid) == 22 and tid not in used:
-                anchors.append(tr); used.add(tid)
-                if len(anchors) >= 3:
-                    break
+        # === 4) 混合：3 首你的曲庫 + 7 首外部（避開 avoid_ids + recent_ids） ===
+        used = set(avoid_ids) | set(recent_ids)
 
-        def _first_artist_id(tr):
-            a = tr.get("artists") or tr.get("artist") or []
-            if isinstance(a, list) and a and isinstance(a[0], dict):
-                return a[0].get("id")
-            if isinstance(a, dict):
-                return a.get("id")
-            return None
+        # 4a) 曲庫錨點（加權抽樣取 3）
+        anchors_pool = [t for t in user_candidates if isinstance(t.get("id"), str) and t["id"] not in used][:20]
+        anchors = _weighted_pick(anchors_pool, k=3)
+        for tr in anchors:
+            if isinstance(tr.get("id"), str):
+                used.add(tr["id"])
 
+        # 4b) 外部 7 首（避免同藝人洗版、避開 used 與你的曲庫）
         ext_chosen, seen_artists = [], set()
         for tr in ext_candidates:
             if len(ext_chosen) >= 7:
@@ -798,7 +894,7 @@ def recommend():
         # === 5) 預覽頁（精簡顯示、無序號） ===
         preview = (request.values.get("preview") or "").strip()
         if preview == "1":
-            # 產生清單：只顯示「歌手 — 歌名」
+            # 清單：只顯示「歌手 — 歌名」
             items = []
             for tr in top10:
                 name = tr.get("name", "")
@@ -813,11 +909,11 @@ def recommend():
                 items.append(f"<li><a href='{url}' target='_blank'>{artists} — {name}</a></li>")
             songs_html = "\n".join(items)
 
-            # 當前這批歌曲的 IDs（用於存歌單 & 下次避開）
+            # 當前這批歌曲 IDs
             ids_str   = ",".join([t.get("id") for t in top10 if isinstance(t.get("id"), str) and len(t.get("id")) == 22])
             safe_text = text.replace("'", "&#39;")
 
-            # === (B) 把這一批寫回情境歷史（新在前、去重保序、最多 40） ===
+            # 把這批寫回情境歷史（新在前、去重保序、最多 40）
             cur_ids = [t.get("id") for t in top10 if isinstance(t.get("id"), str) and len(t.get("id")) == 22]
             old_ids = [x for x in recent_ids if x not in cur_ids]
             history[ctx_key] = (cur_ids + old_ids)[:40]
@@ -885,53 +981,6 @@ def recommend():
             "<h2>❌ 系統暫時出錯</h2>"
             f"<p>錯誤訊息：{str(e)}</p>"
             "<a href='/welcome'>回首頁</a>"
-        )
-
-@app.route("/create_playlist", methods=["POST"])
-def create_playlist():
-    sp = get_spotify_client()
-    if not sp:
-        return redirect(url_for("home"))
-
-    text = (request.form.get("text") or "").strip()
-
-    # 1) 讀取預覽頁的歌曲清單
-    track_ids_raw = (request.form.get("track_ids") or "").strip()
-    ids = [i for i in track_ids_raw.split(",") if len(i) == 22] if track_ids_raw else []
-
-    if not ids:
-        return (
-            "<h3>沒有要加入的歌曲</h3>"
-            "<p>請先到預覽頁，再按「存到 Spotify」。</p>"
-            "<p><a href='/welcome'>↩︎ 回首頁</a></p>"
-        )
-
-    try:
-        # 2) 建立私人歌單並加入歌曲
-        user = sp.current_user()
-        user_id = (user or {}).get("id")
-        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-        title = f"Mooodyyy · {ts} UTC"
-        desc  = f"情境：{text}（由預覽頁直接保存）"
-
-        playlist = sp.user_playlist_create(
-            user=user_id,
-            name=title,
-            public=False,   # 一律私人
-            description=desc
-        )
-        sp.playlist_add_items(playlist_id=playlist["id"], items=ids)
-
-        # 3) 成功後直接跳 Spotify
-        url = (playlist.get("external_urls") or {}).get("spotify", url_for("welcome"))
-        return redirect(url)
-
-    except Exception as e:
-        print(f"❌ create_playlist error: {e}")
-        return (
-            "<h2>❌ 建立歌單失敗</h2>"
-            f"<p>錯誤訊息：{str(e)}</p>"
-            "<p><a href='/welcome'>↩︎ 回首頁</a></p>"
         )
 
 

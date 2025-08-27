@@ -983,6 +983,53 @@ def recommend():
             "<a href='/welcome'>回首頁</a>"
         )
 
+@app.route("/create_playlist", methods=["POST"])
+def create_playlist():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("home"))
+
+    text = (request.form.get("text") or "").strip()
+
+    # 1) 只用預覽頁送過來的這一批歌曲（看到什麼就存什麼）
+    track_ids_raw = (request.form.get("track_ids") or "").strip()
+    ids = [i for i in track_ids_raw.split(",") if len(i) == 22] if track_ids_raw else []
+
+    if not ids:
+        return (
+            "<h3>沒有要加入的歌曲</h3>"
+            "<p>請先在預覽頁按「存到 Spotify」。</p>"
+            "<p><a href='/welcome'>↩︎ 回首頁</a></p>"
+        )
+
+    try:
+        # 2) 建立「私人」歌單並加入歌曲
+        user = sp.current_user()
+        user_id = (user or {}).get("id")
+        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+        title = f"Mooodyyy · {ts} UTC"
+        desc  = f"情境：{text}（由預覽頁直接保存）"
+
+        playlist = sp.user_playlist_create(
+            user=user_id,
+            name=title,
+            public=False,   # 一律私人
+            description=desc
+        )
+        sp.playlist_add_items(playlist_id=playlist["id"], items=ids)
+
+        # 3) 成功後直接跳到 Spotify
+        url = (playlist.get("external_urls") or {}).get("spotify", url_for("welcome"))
+        return redirect(url)
+
+    except Exception as e:
+        print(f"❌ create_playlist error: {e}")
+        return (
+            "<h2>❌ 建立歌單失敗</h2>"
+            f"<p>錯誤訊息：{str(e)}</p>"
+            "<p><a href='/welcome'>↩︎ 回首頁</a></p>"
+        )
+
 
 @app.route("/logout")
 def logout():

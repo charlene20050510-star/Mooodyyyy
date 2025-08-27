@@ -7,6 +7,9 @@ from spotipy.oauth2 import SpotifyOAuth
 import math
 from typing import List, Dict
 from spotipy.exceptions import SpotifyException
+from flask import request, redirect, url_for
+from datetime import datetime
+
 
 
 app = Flask(__name__)
@@ -642,51 +645,57 @@ def welcome():
     sp = get_spotify_client()
     if not sp:
         return redirect(url_for("home"))
+
+    # 取用戶名稱（失敗就顯示「音樂愛好者」）
     try:
         me = sp.current_user()
         name = (me or {}).get("display_name") or "音樂愛好者"
-    except Exception as e:
-        print(f"⚠️ current_user failed: {e}")
+    except Exception:
         name = "音樂愛好者"
 
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset='UTF-8' />
-      <title>Mooodyyy - AI 音樂情境推薦</title>
-      <style>
-        body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Noto Sans TC',sans-serif; background:linear-gradient(135deg,#0f0f13,#1b1f2a); color:#fff; margin:0; padding:20px; min-height:100vh; }}
-        .container {{ max-width:640px; margin:0 auto; }}
-        .card {{ background:rgba(255,255,255,0.1); border-radius:16px; padding:28px; backdrop-filter:blur(10px); }}
-        textarea {{ width:100%; box-sizing:border-box; border:none; outline:none; border-radius:10px; padding:14px; font-size:16px; resize:vertical; }}
-        button {{ background:#FF6B6B; color:#fff; border:none; border-radius:8px; padding:12px 16px; cursor:pointer; font-weight:600; }}
-        a {{ color:#9BE3FF; text-decoration:none; }}
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <h1>🎧 Mooodyyy</h1>
-        <div class="card">
-          <p>嗨，{name}！描述你的情境，我會推薦合適的 Top 10：<br>
-          例如：下雨夜的鋼琴、專心讀書的輕音樂、失戀的深夜車程⋯</p>
-          <form action='/recommend' method='post'>
-            <textarea name='text' rows='4' placeholder='例如：下班後的放鬆小酒館氛圍'></textarea>
-            <!-- 預設走「先預覽」 -->
-            <input type='hidden' name='preview' value='1'>
-            <br/>
-            <button type='submit'>生成 Top 10</button>
-          </form>
-        </div>
+    return f"""
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Mooodyyy · Welcome</title>
+  <style>
+    body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif; background:#0f1115; color:#fff; margin:0;}}
+    .wrap{{max-width:720px; margin:0 auto; padding:32px 20px;}}
+    h1{{margin:0 0 12px;}}
+    p.muted{{color:#aeb4be; margin:6px 0 20px;}}
+    textarea{{width:100%; min-height:140px; padding:12px; font-size:16px; border-radius:10px; border:1px solid #2a2f3a; background:#12161f; color:#e9eef7; box-sizing:border-box;}}
+    button{{padding:10px 16px; border:none; border-radius:10px; cursor:pointer; background:#1DB954; color:#0b0f14; font-weight:700;}}
+    .card{{background:#12161f; border:1px solid #1b2030; border-radius:16px; padding:20px;}}
+    a{{color:#8bd9ff; text-decoration:none;}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🎧 Mooodyyy</h1>
+    <p class="muted">嗨，{name}。描述你的情境，我會推薦一份 10 首的歌單。</p>
 
-        <p style='text-align:center; margin-top:32px; opacity:.85;'>
-          <a href='/logout'>登出</a>
-        </p>
-      </div>
-    </body>
-    </html>
-    """
-    return html
+    <div class="card">
+      <form action="/recommend" method="post">
+        <textarea name="text" placeholder="例：深夜散步、下雨寫作、想念老朋友、專心讀書的輕音樂…"></textarea>
+
+        <!-- 預設走「先預覽」 -->
+        <input type="hidden" name="preview" value="1">
+
+        <div style="margin-top:12px;">
+          <button type="submit">推薦歌單</button>
+        </div>
+      </form>
+    </div>
+
+    <p class="muted" style="margin-top:16px;">送出後會先顯示「歌單預覽」。你可以選擇 🔄 重新生成 或 ➕ 存到 Spotify。</p>
+    <p style="text-align:center; margin-top:16px;"><a href="/logout">登出</a></p>
+  </div>
+</body>
+</html>
+"""
+
 
 @app.route("/recommend", methods=["GET", "POST"])
 def recommend():
@@ -694,204 +703,143 @@ def recommend():
     if not sp:
         return redirect(url_for("home"))
 
-    # 取得情境文字
-    if request.method == "POST":
-        text = (request.form.get("text") or "").strip()
-    else:
-        text = (request.args.get("text") or "").strip()
-
+    # 取得情境文字（POST 優先、GET 次之）
+    text = (request.form.get("text") or request.args.get("text") or "").strip()
     if not text:
         return redirect(url_for("welcome"))
 
     try:
-        t0 = time.time()
-
-        # 1) 收集候選池
+        # === 1) 收集候選池（沿用你原本的方法） ===
         params = map_text_to_params(text)
-        user_pool = collect_user_tracks(sp, max_n=150)                  # 你的曲庫候選
-        ext_pool  = collect_external_tracks_by_category(sp, text, 300)  # 外部候選
+        user_pool = collect_user_tracks(sp, max_n=150)                   # 你的曲庫候選
+        ext_pool  = collect_external_tracks_by_category(sp, text, 300)   # 外部候選
 
-        # 2) 準備特徵（audio features）
-        ids = []
+        # === 2) 準備特徵與語意分數（沿用你原本的方法） ===
+        ids_for_feat = []
         for tr in (user_pool + ext_pool):
             tid = tr.get("id")
             if isinstance(tid, str) and len(tid) == 22:
-                ids.append(tid)
-                if len(ids) >= 300:
+                ids_for_feat.append(tid)
+                if len(ids_for_feat) >= 300:
                     break
-        feats = audio_features_map(sp, ids)
+        feats   = audio_features_map(sp, ids_for_feat)
+        sem_map = build_semantic_map(text, user_pool + ext_pool, feats)
 
-        # 3) 語意 + 特徵排序
-        all_candidates = user_pool + ext_pool
-        sem_map = build_semantic_map(text, all_candidates, feats)
+        # === 3) 排序（沿用你原本的方法） ===
+        user_candidates = rank_pool_by_semantic_and_features(user_pool, feats, sem_map, params, top_n=10)
+        ext_candidates  = rank_pool_by_semantic_and_features(ext_pool,  feats, sem_map, params, top_n=50)
 
-        user_candidates = rank_pool_by_semantic_and_features(
-            user_pool, feats, sem_map, params, top_n=10
-        )
-        ext_candidates = rank_pool_by_semantic_and_features(
-            ext_pool, feats, sem_map, params, top_n=50
-        )
+        # === 4) 混合：最多 3 首你的曲庫 + 最多 7 首外部（沿用你的策略） ===
+        used, anchors = set(), []
+        for tr in user_candidates:
+            tid = tr.get("id")
+            if isinstance(tid, str) and len(tid) == 22 and tid not in used:
+                anchors.append(tr); used.add(tid)
+                if len(anchors) >= 3: break
 
-        # 小工具：拿 artist id
-        def _safe_artist_id(tr):
+        user_all_ids = {t.get("id") for t in user_pool if isinstance(t.get("id"), str) and len(t.get("id")) == 22}
+
+        def _first_artist_id(tr):
             a = tr.get("artists") or tr.get("artist") or []
-            if isinstance(a, list) and a:
-                first = a[0]
-                return first.get("id") if isinstance(first, dict) else None
+            if isinstance(a, list) and a and isinstance(a[0], dict):
+                return a[0].get("id")
             if isinstance(a, dict):
                 return a.get("id")
             return None
 
-        user_all_ids = {
-            t.get("id") for t in user_pool
-            if isinstance(t.get("id"), str) and len(t.get("id")) == 22
-        }
-
-        # 4) 混合：最多 3 首你的曲庫 + 最多 7 首外部
-        used = set()
-
-        # 4a) 你的曲庫（最多 3 首，當熟悉 anchor）
-        anchors = []
-        for tr in user_candidates:
-            tid = tr.get("id")
-            if not isinstance(tid, str) or len(tid) != 22:
-                continue
-            if tid in used:
-                continue
-            tr["source"] = "user"
-            anchors.append(tr)
-            used.add(tid)
-            if len(anchors) >= 3:
-                break
-
-        # 4b) 外部新歌（最多 7 首，避免與你曲庫重複 & 同歌手過度洗版）
         ext_chosen, seen_artists = [], set()
         for tr in ext_candidates:
-            if len(ext_chosen) >= 7:
-                break
+            if len(ext_chosen) >= 7: break
             tid = tr.get("id")
-            if not isinstance(tid, str) or len(tid) != 22:
-                continue
-            if tid in used or tid in user_all_ids:
-                continue
-            aid = _safe_artist_id(tr)
-            if aid and aid in seen_artists:
-                continue
+            if not (isinstance(tid, str) and len(tid) == 22): continue
+            if tid in used or tid in user_all_ids: continue
+            aid = _first_artist_id(tr)
+            if aid and aid in seen_artists: continue
             seen_artists.add(aid)
-            tr["source"] = "external"
-            ext_chosen.append(tr)
-            used.add(tid)
+            ext_chosen.append(tr); used.add(tid)
 
-        # 4c) 若還不足 7 首：放寬條件補足（仍避免完全重複）
+        # 不足就放寬補滿到 7
         if len(ext_chosen) < 7:
             for tr in ext_candidates:
-                if len(ext_chosen) >= 7:
-                    break
+                if len(ext_chosen) >= 7: break
                 tid = tr.get("id")
-                if not isinstance(tid, str) or len(tid) != 22 or tid in used:
-                    continue
-                tr["source"] = "external"
-                ext_chosen.append(tr)
-                used.add(tid)
+                if not (isinstance(tid, str) and len(tid) == 22) or tid in used: continue
+                ext_chosen.append(tr); used.add(tid)
 
-        # 4d) 合併成 Top10（不硬湊到 10 也可）
-        mixed = anchors + ext_chosen
-        if len(mixed) < 10:
-            # 嘗試再補幾首你的曲庫
-            for tr in user_candidates:
-                if len(mixed) >= 10:
-                    break
-                tid = tr.get("id")
-                if not isinstance(tid, str) or len(tid) != 22 or tid in used:
-                    continue
-                tr["source"] = "user"
-                mixed.append(tr)
-                used.add(tid)
+        top10 = (anchors + ext_chosen)[:10]
 
-        top10 = mixed[:10]
-        dt = time.time() - t0
-
-        # 5) 先預覽 or 直接建立歌單
-        preview = (request.args.get("preview") or request.form.get("preview") or "").strip()
-
+        # === 5) 預覽頁（精簡顯示） ===
+        preview = (request.values.get("preview") or "").strip()
         if preview == "1":
-            # 確保列表渲染穩定：有 item_li 就用；沒有就走簡易樣板
-            try:
-                songs_html = "\n".join(item_li(i + 1, tr) for i, tr in enumerate(top10))
-            except Exception:
-                items = []
-                for i, tr in enumerate(top10, 1):
-                    nm = tr.get("name", "")
-                    artists = ", ".join(a.get("name", "") for a in tr.get("artists", []))
-                    u = (tr.get("external_urls") or {}).get("spotify", "#")
-                    src = "（你的曲庫）" if tr.get("source") == "user" else "（新探索）"
-                    items.append(f"<li>{i:02d}. <a href='{u}' target='_blank'>{artists} — {nm}</a> {src}</li>")
-                songs_html = "\n".join(items)
+            # 生成乾淨的清單：1. {Artist} — {Name}
+            items = []
+            for i, tr in enumerate(top10, 1):
+                name = tr.get("name", "")
+                arts = tr.get("artists", [])
+                if isinstance(arts, list) and arts and isinstance(arts[0], dict):
+                    artists = ", ".join(a.get("name", "") for a in arts)
+                elif isinstance(arts, list):
+                    artists = ", ".join(str(a) for a in arts)
+                else:
+                    artists = str(arts) if arts else ""
+                url = (tr.get("external_urls") or {}).get("spotify") or tr.get("url") or "#"
+                items.append(f"<li>{i}. <a href='{url}' target='_blank'>{artists} — {name}</a></li>")
+            songs_html = "\n".join(items)
 
-            # 準備 track_ids（讓「看到什麼就存什麼」）
-            ids_str = ",".join([t.get("id") for t in top10 if isinstance(t.get("id"), str)])
+            ids_str   = ",".join([t.get("id") for t in top10 if isinstance(t.get("id"), str) and len(t.get("id")) == 22])
+            safe_text = text.replace("'", "&#39;")
 
-            # 三顆按鈕：重新生成 / 存私人 / 存公開
-            buttons_html = f"""
-            <div style='margin:20px 0; display:flex; gap:10px; flex-wrap:wrap;'>
-              <form method='POST' action='/recommend' style='display:inline;'>
-                <input type='hidden' name='text' value='{text.replace("'", "&#39;")}'>
-                <input type='hidden' name='preview' value='1'>
-                <button type='submit' style='background:#444; color:#fff; border:none; padding:10px 12px; border-radius:6px;'>🔄 重新生成</button>
-              </form>
-
-              <form method='POST' action='/create_playlist' style='display:inline;'>
-                <input type='hidden' name='mode' value='private'>
-                <input type='hidden' name='text' value='{text.replace("'", "&#39;")}'>
-                <input type='hidden' name='track_ids' value='{ids_str}'>
-                <button type='submit' style='background:#333; color:#fff; border:none; padding:10px 12px; border-radius:6px;'>➕ 存到 Spotify（私人）</button>
-              </form>
-
-              <form method='POST' action='/create_playlist' style='display:inline;'>
-                <input type='hidden' name='mode' value='public'>
-                <input type='hidden' name='text' value='{text.replace("'", "&#39;")}'>
-                <input type='hidden' name='track_ids' value='{ids_str}'>
-                <button type='submit' style='background:#1DB954; color:#fff; border:none; padding:10px 12px; border-radius:6px;'>🌐 存到 Spotify（公開）</button>
-              </form>
-            </div>
-            """
-
-            # 簡單的預覽頁
             page = f"""
-            <html><head><meta charset='utf-8'><title>推薦結果（預覽）</title></head>
+            <!doctype html>
+            <html lang="zh-Hant">
+            <head>
+              <meta charset="utf-8">
+              <title>推薦結果（預覽）</title>
+              <meta name="viewport" content="width=device-width,initial-scale=1">
+              <style>
+                body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif; background:#0f1115; color:#fff;}}
+                .wrap{{max-width:800px; margin:24px auto; padding:0 16px;}}
+                button{{padding:10px 12px; border:none; border-radius:8px; cursor:pointer;}}
+                .btn-save{{background:#1DB954; color:#0b0f14; font-weight:700;}}
+                .btn-regen{{background:#2e323c; color:#fff;}}
+                a{{color:#8bd9ff; text-decoration:none;}}
+                ol{{line-height:1.8;}}
+              </style>
+            </head>
             <body>
-              <div style='max-width:800px;margin:24px auto;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;'>
+              <div class="wrap">
                 <h1>🎯 為你找到了 {len(top10)} 首歌</h1>
-                <p><strong>你的情境：</strong>"{text}"</p>
-                <p style='opacity:.8;'>候選來源：{len(user_pool)}（個人） + {len(ext_pool)}（外部） → 耗時 {dt:.1f} 秒｜規則：最多 3（個人）+ 至多 7（外部）</p>
-                <h2>🎵 推薦歌單</h2>
+                <p><strong>你的情境：</strong>"{safe_text}"</p>
                 <ol>
                   {songs_html}
                 </ol>
-                {buttons_html}
-                <p style='margin-top:24px;'><a href='/welcome'>↩︎ 回首頁</a></p>
+                <div style="margin:20px 0; display:flex; gap:10px; flex-wrap:wrap;">
+                  <form method="POST" action="/recommend" style="display:inline;">
+                    <input type="hidden" name="text" value="{safe_text}">
+                    <input type="hidden" name="preview" value="1">
+                    <button type="submit" class="btn-regen">🔄 重新生成</button>
+                  </form>
+                  <form method="POST" action="/create_playlist" style="display:inline;">
+                    <input type="hidden" name="text" value="{safe_text}">
+                    <input type="hidden" name="track_ids" value="{ids_str}">
+                    <button type="submit" class="btn-save">➕ 存到 Spotify</button>
+                  </form>
+                </div>
+                <p><a href="/welcome">↩︎ 回首頁</a></p>
               </div>
-            </body></html>
+            </body>
+            </html>
             """
             return page
 
-        # 非預覽：直接建立私人歌單（舊行為保留，避免破壞既有流程）
-        user = sp.current_user()
-        user_id = (user or {}).get("id")
-
-        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-        title = f"Mooodyyy · {ts} UTC"
-        desc  = f"情境：{text}（最多 3 首來自個人曲庫 + 其餘外部）"
-
-        playlist = sp.user_playlist_create(
-            user=user_id,
-            name=title,
-            public=False,  # 預設私人；若你要依 mode 做公開/私人，請到 /create_playlist 裡處理
-            description=desc
-        )
-        sp.playlist_add_items(playlist_id=playlist["id"], items=[t["id"] for t in top10])
-
-        url = (playlist.get("external_urls") or {}).get("spotify", "#")
+        # 非預覽：直接建「私人」歌單後跳轉（保留舊行為以向後相容）
+        user   = sp.current_user(); user_id = (user or {}).get("id")
+        ts     = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+        title  = f"Mooodyyy · {ts} UTC"
+        desc   = f"情境：{text}（由即時推薦建立）"
+        plist  = sp.user_playlist_create(user=user_id, name=title, public=False, description=desc)
+        sp.playlist_add_items(playlist_id=plist["id"], items=[t["id"] for t in top10 if t.get("id")])
+        url    = (plist.get("external_urls") or {}).get("spotify", url_for("welcome"))
         return redirect(url)
 
     except Exception as e:
@@ -901,17 +849,16 @@ def recommend():
             f"<p>錯誤訊息：{str(e)}</p>"
             "<a href='/welcome'>回首頁</a>"
         )
-        
+
 @app.route("/create_playlist", methods=["POST"])
 def create_playlist():
     sp = get_spotify_client()
     if not sp:
         return redirect(url_for("home"))
 
-    mode = (request.form.get("mode") or "private").lower()   # "public" 或 "private"
     text = (request.form.get("text") or "").strip()
 
-    # 1) 讀取預覽頁傳來的歌曲（重點：不重算、原封不動保存）
+    # 1) 讀取預覽頁的歌曲清單
     track_ids_raw = (request.form.get("track_ids") or "").strip()
     ids = [i for i in track_ids_raw.split(",") if len(i) == 22] if track_ids_raw else []
 
@@ -923,45 +870,25 @@ def create_playlist():
         )
 
     try:
-        # 2) 建立歌單
+        # 2) 建立私人歌單並加入歌曲
         user = sp.current_user()
         user_id = (user or {}).get("id")
         ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
         title = f"Mooodyyy · {ts} UTC"
-        desc  = f"情境：{text}（這份歌單由預覽頁直接保存）"
+        desc  = f"情境：{text}（由預覽頁直接保存）"
 
         playlist = sp.user_playlist_create(
             user=user_id,
             name=title,
-            public=(mode == "public"),
+            public=False,   # 一律私人
             description=desc
         )
         sp.playlist_add_items(playlist_id=playlist["id"], items=ids)
-        url = (playlist.get("external_urls") or {}).get("spotify", "#")
 
-        # 3) 取曲目資訊用來顯示確認清單
-        tracks_html = ""
-        try:
-            info = sp.tracks(ids)
-            items = []
-            for i, tr in enumerate((info or {}).get("tracks", []), 1):
-                if not tr: 
-                    continue
-                nm = tr.get("name", "")
-                artists = ", ".join(a.get("name","") for a in tr.get("artists", []))
-                u = (tr.get("external_urls") or {}).get("spotify", "#")
-                items.append(f"<li>{i:02d}. <a href='{u}' target='_blank'>{artists} — {nm}</a></li>")
-            tracks_html = "<ol>" + "".join(items) + "</ol>"
-        except Exception:
-            pass
+        # 3) 成功後直接跳 Spotify
+        url = (playlist.get("external_urls") or {}).get("spotify", url_for("welcome"))
+        return redirect(url)
 
-        return f"""
-            <h2>✅ 已建立歌單：<a href='{url}' target='_blank'>{title}</a></h2>
-            <p>模式：{"公開" if mode=="public" else "私人"}</p>
-            <p>情境：{text}</p>
-            {tracks_html}
-            <p style='margin-top:16px;'><a href='/welcome'>↩︎ 回首頁</a></p>
-        """
     except Exception as e:
         print(f"❌ create_playlist error: {e}")
         return (

@@ -6,6 +6,7 @@ import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 import math
 from typing import List, Dict
+from spotipy.exceptions import SpotifyException
 
 
 app = Flask(__name__)
@@ -436,124 +437,70 @@ def _safe_audio_features(sp, ids):
 
     return feats
 
-def audio_features_map(sp, track_ids):
-    # 先把 cache 裡有的拿出來
+def audio_features_map(sp, track_ids, batch_size: int = 50):
+    """
+    安全版：批次查 audio features；失敗時改逐首查，403/無資料就跳過。
+    回傳 {track_id: features_dict}（只包含成功拿到特徵的歌）
+    """
+    # 1) 過濾合法 id（Spotify track id 長度 22）
+    valid_ids = [
+        tid for tid in track_ids
+        if isinstance(tid, str) and len(tid) == 22
+    ]
+
     feats = {}
-    to_query = []
-    for tid in track_ids:
-        if tid in CACHE["feat"]:
-            feats[tid] = CACHE["feat"][tid]
-        else:
-            to_query.append(tid)
+    skipped = []  # 紀錄拿不到特徵而被跳過的 id
 
-    # 安全起見限制最多查 300 筆（足夠 3+7 流程）
-    to_query = to_query[:300]
+    def _single_lookup(tid: str):
+        """單首查詢；拿不到就跳過"""
+        try:
+            row = sp.audio_features([tid])  # 會回 list 長度 1
+            if row and isinstance(row, list) and row[0]:
+                feats[tid] = row[0]
+            else:
+                skipped.append(tid)
+        except SpotifyException as se:
+            status = getattr(se, "http_status", None)
+            print(f"[warn] audio_features single-id failed: {tid} -> status {status}")
+            skipped.append(tid)
+        except Exception as se:
+            print(f"[warn] audio_features single-id failed: {tid} -> {se}")
+            skipped.append(tid)
 
-    # 用安全批次查
-    fresh = _safe_audio_features(sp, to_query)
+    # 2) 批次查，失敗再逐首補
+    for i in range(0, len(valid_ids), batch_size):
+        chunk = valid_ids[i:i + batch_size]
+        try:
+            rows = sp.audio_features(chunk)  # 正常會回每個 id 對應的 row
+            # rows 可能是 None 或含 None，逐一檢查
+            if not rows:
+                # 如果整包 None，逐首補查
+                print(f"[warn] batch audio_features empty for {len(chunk)} ids; fallback to single")
+                for tid in chunk:
+                    _single_lookup(tid)
+                continue
 
-    # 寫回 cache
-    for tid, f in fresh.items():
-        CACHE["feat"][tid] = f
-        feats[tid] = f
+            for tid, row in zip(chunk, rows):
+                if row and isinstance(row, dict):
+                    feats[tid] = row
+                else:
+                    # 這首拿不到 → 單首再試一次；還是不行就跳過
+                    _single_lookup(tid)
 
+        except SpotifyException as e:
+            status = getattr(e, "http_status", None)
+            print(f"[warn] batch audio_features failed (status {status}): fallback to single for {len(chunk)} ids")
+            for tid in chunk:
+                _single_lookup(tid)
+
+        except Exception as e:
+            print(f"[warn] batch audio_features unexpected error: {e}; fallback to single for {len(chunk)} ids")
+            for tid in chunk:
+                _single_lookup(tid)
+
+    print(f"[features] ok={len(feats)}  skipped={len(set(skipped))}")
     return feats
 
-
-def _dist(a, b):
-    return abs((a or 0) - (b or 0))
-
-
-def score_track(f, p):
-    if not f:
-        return 1e9
-    s = 0.0
-    s += _dist(f.get("energy"), p["target_energy"])  # energy gap
-    s += _dist(f.get("valence"), p["target_valence"])  # positivity gap
-    tempo = f.get("tempo") or p["target_tempo"]
-    s += abs(tempo - p["target_tempo"]) / 100.0  # scale to similar magnitude
-    if p["prefer_acoustic"]:
-        s += (1.0 - (f.get("acousticness") or 0)) * 0.5
-    if p["prefer_instrumental"]:
-        s += (1.0 - (f.get("instrumentalness") or 0)) * 0.5
-    return s
-
-
-def select_top(tracks, feats, params, top_n=10):
-    scored = []
-    for t in tracks:
-        tid = t.get("id")
-        s = score_track(feats.get(tid), params)
-        scored.append((s, t))
-    scored.sort(key=lambda x: x[0])
-    return [t for _, t in scored[:top_n]]
-
-def item_li(i, tr):
-    name = tr.get("name", "Unknown")
-    artists = ", ".join([a.get("name", "") for a in tr.get("artists", [])])
-    url = (tr.get("external_urls") or {}).get("spotify", "#")
-    return f"<li style='margin:8px 0; list-style:none;'>{i:02d}. <a href='{url}' target='_blank' style='color:#1DB954'><strong>{artists}</strong> - {name}</a></li>"
-
-# ========= 新增：依情境切換外部來源 =========
-def collect_external_tracks_by_category(sp, text: str, max_n: int = 200):
-    """
-    根據輸入文字 (text) 判斷情境，選取不同類別的 Spotify playlist 來抓歌。
-    抓不到某個歌單不會整個失敗，會繼續其他清單。
-    """
-    text = (text or "").lower()
-
-    # 1) 先用很直覺的關鍵詞判斷情境
-    if any(k in text for k in ["party", "派對", "嗨", "開心", "快樂"]):
-        category = "party"
-        playlist_ids = [
-            "37i9dQZF1DX0BcQWzuB7ZO",  # Dance Party
-            "37i9dQZF1DXaXB8fQg7xif",  # EDM
-        ]
-    elif any(k in text for k in ["sad", "傷心", "難過", "哭", "失戀", "emo"]):
-        category = "sad"
-        playlist_ids = [
-            "37i9dQZF1DX7qK8ma5wgG1",  # Sad Songs
-            "37i9dQZF1DX3YSRoSdA634",  # Deep Dark Indie
-        ]
-    elif any(k in text for k in ["chill", "放鬆", "冷靜", "悠閒", "輕鬆"]):
-        category = "chill"
-        playlist_ids = [
-            "37i9dQZF1DX4WYpdgoIcn6",  # Chill Hits
-            "37i9dQZF1DWUvQoIOFMFUT",  # Lofi Chill
-        ]
-    elif any(k in text for k in ["focus", "讀書", "專注", "工作", "coding", "專心"]):
-        category = "focus"
-        playlist_ids = [
-            "37i9dQZF1DX8Uebhn9wzrS",  # Focus
-            "37i9dQZF1DX9sIqqvKsjG8",  # Instrumental Study
-        ]
-    else:
-        category = "default"
-        playlist_ids = [
-            "37i9dQZF1DXcBWIGoYBM5M",  # Today's Top Hits
-            "37i9dQZF1DX1s9knjP51Oa",  # Hot Hits
-        ]
-
-    print(f"[collect_external_tracks_by_category] 情境分類: {category}")
-
-    # 2) 依選到的歌單列表把歌撈出來
-    tracks = []
-    for pid in playlist_ids:
-        try:
-            pl = sp.playlist_items(pid, additional_types=["track"], market="TW")
-            for item in pl.get("items", []):
-                tr = item.get("track")
-                if tr and isinstance(tr.get("id"), str):
-                    tracks.append(tr)
-                    if len(tracks) >= max_n:
-                        break
-        except Exception as e:
-            print(f"[warn] 撈 playlist {pid} 失敗: {e}")
-        if len(tracks) >= max_n:
-            break
-
-    return tracks[:max_n]
-# ========= 新增結束 =========
 
 # ======================================================
 # Routes

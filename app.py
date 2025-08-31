@@ -10,6 +10,8 @@ from spotipy.exceptions import SpotifyException
 from datetime import datetime
 import random, re
 from flask import request, redirect, url_for, session
+import random, re
+import traceback
 
 
 
@@ -1185,10 +1187,9 @@ def welcome():
 </body>
 </html>
 '''
-
-
 @app.route("/recommend", methods=["GET", "POST"])
 def recommend():
+    import traceback  # 就地引用，免動上面 imports
     sp = get_spotify_client()
     if not sp:
         return redirect(url_for("home"))
@@ -1308,10 +1309,10 @@ def recommend():
         avoid_ids = set(i for i in avoid_raw.split(",") if len(i) == 22) if avoid_raw else set()
 
         # 你的曲庫所有 id（避免外部重複你的曲庫曲目）
-        user_all_ids = {{
+        user_all_ids = {
             t.get("id") for t in user_pool
             if isinstance(t.get("id"), str) and len(t.get("id")) == 22
-        }}
+        }
 
         # === 4) 混合：3 首你的曲庫 + 7 首外部（避開 avoid_ids + recent_ids） ===
         used = set(avoid_ids) | set(recent_ids)
@@ -1365,12 +1366,12 @@ def recommend():
                     artists = ", ".join(str(a) for a in arts)
                 else:
                     artists = str(arts) if arts else ""
-                url = (tr.get("external_urls") or {{}}).get("spotify") or tr.get("url") or "#"
-                
+                url = (tr.get("external_urls") or {}).get("spotify") or tr.get("url") or "#"
+
                 # 計算匹配度百分比 (基於 _score)
                 score = tr.get("_score", 0.5)
                 match_percent = int(score * 100)
-                
+
                 items.append(f'''
                 <div class="track-item">
                     <div class="track-number">{i:02d}</div>
@@ -1410,7 +1411,6 @@ def recommend():
                 <title>為你推薦的歌單 - Mooodyyy</title>
                 <style>
                     * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-                    
                     body {{
                         font-family: 'Circular', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif;
                         background: linear-gradient(135deg, #191414 0%, #0d1117 50%, #121212 100%);
@@ -1418,288 +1418,58 @@ def recommend():
                         min-height: 100vh;
                         line-height: 1.6;
                     }}
-                    
-                    .container {{
-                        max-width: 900px;
-                        margin: 0 auto;
-                        padding: 40px 20px;
-                    }}
-                    
-                    .header {{
-                        text-align: center;
-                        margin-bottom: 40px;
-                    }}
-                    
-                    .logo {{
-                        font-size: 2rem;
-                        font-weight: 900;
-                        background: linear-gradient(135deg, #1DB954, #1ed760);
-                        -webkit-background-clip: text;
-                        -webkit-text-fill-color: transparent;
-                        background-clip: text;
-                        margin-bottom: 16px;
-                    }}
-                    
-                    .result-title {{
-                        font-size: 1.8rem;
-                        font-weight: 700;
-                        margin-bottom: 12px;
-                        color: #ffffff;
-                    }}
-                    
-                    .context-display {{
-                        background: rgba(29, 185, 84, 0.1);
-                        border: 1px solid rgba(29, 185, 84, 0.2);
-                        border-radius: 16px;
-                        padding: 20px;
-                        margin-bottom: 32px;
-                        text-align: center;
-                    }}
-                    
-                    .context-label {{
-                        color: #1DB954;
-                        font-weight: 600;
-                        font-size: 0.9rem;
-                        text-transform: uppercase;
-                        letter-spacing: 1px;
-                        margin-bottom: 8px;
-                    }}
-                    
-                    .context-text {{
-                        font-size: 1.1rem;
-                        color: #ffffff;
-                        font-style: italic;
-                    }}
-                    
-                    .playlist-container {{
-                        background: rgba(255, 255, 255, 0.02);
-                        border: 1px solid rgba(255, 255, 255, 0.08);
-                        border-radius: 24px;
-                        padding: 32px;
-                        backdrop-filter: blur(20px);
-                        margin-bottom: 32px;
-                        position: relative;
-                        overflow: hidden;
-                    }}
-                    
-                    .playlist-container::before {{
-                        content: '';
-                        position: absolute;
-                        top: 0;
-                        left: 0;
-                        right: 0;
-                        height: 1px;
-                        background: linear-gradient(90deg, transparent, #1DB954, transparent);
-                    }}
-                    
-                    .playlist-header {{
-                        display: flex;
-                        align-items: center;
-                        gap: 12px;
-                        margin-bottom: 24px;
-                        padding-bottom: 16px;
-                        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-                    }}
-                    
-                    .playlist-icon {{
-                        width: 48px;
-                        height: 48px;
-                        background: linear-gradient(135deg, #1DB954, #1ed760);
-                        border-radius: 12px;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        font-size: 1.5rem;
-                    }}
-                    
-                    .playlist-info h3 {{
-                        font-size: 1.4rem;
-                        font-weight: 700;
-                        margin-bottom: 4px;
-                    }}
-                    
-                    .playlist-info p {{
-                        color: #b3b3b3;
-                        font-size: 0.95rem;
-                    }}
-                    
-                    .tracks-list {{
-                        display: flex;
-                        flex-direction: column;
-                        gap: 8px;
-                    }}
-                    
-                    .track-item {{
-                        display: flex;
-                        align-items: center;
-                        gap: 16px;
-                        padding: 12px 16px;
-                        border-radius: 12px;
-                        background: rgba(255, 255, 255, 0.02);
-                        border: 1px solid rgba(255, 255, 255, 0.05);
-                        transition: all 0.2s ease;
-                        position: relative;
-                        overflow: hidden;
-                    }}
-                    
-                    .track-item:hover {{
-                        background: rgba(29, 185, 84, 0.05);
-                        border-color: rgba(29, 185, 84, 0.1);
-                        transform: translateX(4px);
-                    }}
-                    
-                    .track-number {{
-                        font-size: 0.9rem;
-                        color: #757575;
-                        font-weight: 600;
-                        width: 24px;
-                        text-align: center;
-                    }}
-                    
-                    .track-info {{
-                        flex: 1;
-                        min-width: 0;
-                    }}
-                    
-                    .track-name {{
-                        font-weight: 600;
-                        font-size: 1rem;
-                        color: #ffffff;
-                        margin-bottom: 2px;
-                        overflow: hidden;
-                        text-overflow: ellipsis;
-                        white-space: nowrap;
-                    }}
-                    
-                    .track-artist {{
-                        color: #b3b3b3;
-                        font-size: 0.9rem;
-                        overflow: hidden;
-                        text-overflow: ellipsis;
-                        white-space: nowrap;
-                    }}
-                    
-                    .track-actions {{
-                        display: flex;
-                        align-items: center;
-                        gap: 12px;
-                    }}
-                    
-                    .match-score {{
-                        background: rgba(29, 185, 84, 0.1);
-                        color: #1DB954;
-                        padding: 4px 8px;
-                        border-radius: 8px;
-                        font-size: 0.8rem;
-                        font-weight: 600;
-                        border: 1px solid rgba(29, 185, 84, 0.2);
-                    }}
-                    
-                    .spotify-link {{
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        width: 36px;
-                        height: 36px;
-                        border-radius: 50%;
-                        background: rgba(29, 185, 84, 0.1);
-                        border: 1px solid rgba(29, 185, 84, 0.2);
-                        transition: all 0.2s ease;
-                        text-decoration: none;
-                    }}
-                    
-                    .spotify-link:hover {{
-                        background: #1DB954;
-                        transform: scale(1.1);
-                    }}
-                    
-                    .spotify-link:hover svg {{
-                        fill: #000000;
-                    }}
-                    
-                    .actions {{
-                        display: flex;
-                        gap: 16px;
-                        margin-top: 32px;
-                        justify-content: center;
-                        flex-wrap: wrap;
-                    }}
-                    
-                    .btn {{
-                        padding: 14px 28px;
-                        border: none;
-                        border-radius: 50px;
-                        cursor: pointer;
-                        font-weight: 700;
-                        font-size: 1rem;
-                        transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
-                        text-decoration: none;
-                        display: inline-flex;
-                        align-items: center;
-                        gap: 8px;
-                    }}
-                    
-                    .btn-primary {{
-                        background: linear-gradient(135deg, #1DB954, #1ed760);
-                        color: #000000;
-                        box-shadow: 0 6px 24px rgba(29, 185, 84, 0.25);
-                    }}
-                    
-                    .btn-primary:hover {{
-                        transform: translateY(-2px);
-                        box-shadow: 0 8px 32px rgba(29, 185, 84, 0.35);
-                    }}
-                    
-                    .btn-secondary {{
-                        background: rgba(255, 255, 255, 0.05);
-                        color: #ffffff;
-                        border: 1px solid rgba(255, 255, 255, 0.1);
-                    }}
-                    
-                    .btn-secondary:hover {{
-                        background: rgba(255, 255, 255, 0.1);
-                        transform: translateY(-1px);
-                    }}
-                    
-                    .back-link {{
-                        text-align: center;
-                        margin-top: 32px;
-                    }}
-                    
-                    .back-link a {{
-                        color: #b3b3b3;
-                        text-decoration: none;
-                        font-size: 0.95rem;
-                        transition: color 0.2s ease;
-                    }}
-                    
-                    .back-link a:hover {{
-                        color: #1DB954;
-                    }}
-                    
+                    .container {{ max-width: 900px; margin: 0 auto; padding: 40px 20px; }}
+                    .header {{ text-align: center; margin-bottom: 40px; }}
+                    .logo {{ font-size: 2rem; font-weight: 900; background: linear-gradient(135deg, #1DB954, #1ed760);
+                             -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; margin-bottom: 16px; }}
+                    .result-title {{ font-size: 1.8rem; font-weight: 700; margin-bottom: 12px; color: #ffffff; }}
+                    .context-display {{ background: rgba(29, 185, 84, 0.1); border: 1px solid rgba(29, 185, 84, 0.2); border-radius: 16px;
+                                        padding: 20px; margin-bottom: 32px; text-align: center; }}
+                    .context-label {{ color: #1DB954; font-weight: 600; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }}
+                    .context-text {{ font-size: 1.1rem; color: #ffffff; font-style: italic; }}
+                    .playlist-container {{ background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 24px;
+                                           padding: 32px; backdrop-filter: blur(20px); margin-bottom: 32px; position: relative; overflow: hidden; }}
+                    .playlist-container::before {{ content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+                                                   background: linear-gradient(90deg, transparent, #1DB954, transparent); }}
+                    .playlist-header {{ display: flex; align-items: center; gap: 12px; margin-bottom: 24px; padding-bottom: 16px;
+                                        border-bottom: 1px solid rgba(255, 255, 255, 0.05); }}
+                    .playlist-icon {{ width: 48px; height: 48px; background: linear-gradient(135deg, #1DB954, #1ed760); border-radius: 12px;
+                                      display: flex; align-items: center; justify-content: center; font-size: 1.5rem; }}
+                    .playlist-info h3 {{ font-size: 1.4rem; font-weight: 700; margin-bottom: 4px; }}
+                    .playlist-info p {{ color: #b3b3b3; font-size: 0.95rem; }}
+                    .tracks-list {{ display: flex; flex-direction: column; gap: 8px; }}
+                    .track-item {{ display: flex; align-items: center; gap: 16px; padding: 12px 16px; border-radius: 12px;
+                                   background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05); transition: all 0.2s ease;
+                                   position: relative; overflow: hidden; }}
+                    .track-item:hover {{ background: rgba(29, 185, 84, 0.05); border-color: rgba(29, 185, 84, 0.1); transform: translateX(4px); }}
+                    .track-number {{ font-size: 0.9rem; color: #757575; font-weight: 600; width: 24px; text-align: center; }}
+                    .track-info {{ flex: 1; min-width: 0; }}
+                    .track-name {{ font-weight: 600; font-size: 1rem; color: #ffffff; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+                    .track-artist {{ color: #b3b3b3; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+                    .track-actions {{ display: flex; align-items: center; gap: 12px; }}
+                    .match-score {{ background: rgba(29, 185, 84, 0.1); color: #1DB954; padding: 4px 8px; border-radius: 8px; font-size: 0.8rem; font-weight: 600;
+                                    border: 1px solid rgba(29, 185, 84, 0.2); }}
+                    .spotify-link {{ display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%;
+                                     background: rgba(29, 185, 84, 0.1); border: 1px solid rgba(29, 185, 84, 0.2); transition: all 0.2s ease; text-decoration: none; }}
+                    .spotify-link:hover {{ background: #1DB954; transform: scale(1.1); }}
+                    .spotify-link:hover svg {{ fill: #000000; }}
+                    .actions {{ display: flex; gap: 16px; margin-top: 32px; justify-content: center; flex-wrap: wrap; }}
+                    .btn {{ padding: 14px 28px; border: none; border-radius: 50px; cursor: pointer; font-weight: 700; font-size: 1rem;
+                            transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94); text-decoration: none; display: inline-flex; align-items: center; gap: 8px; }}
+                    .btn-primary {{ background: linear-gradient(135deg, #1DB954, #1ed760); color: #000000; box-shadow: 0 6px 24px rgba(29, 185, 84, 0.25); }}
+                    .btn-primary:hover {{ transform: translateY(-2px); box-shadow: 0 8px 32px rgba(29, 185, 84, 0.35); }}
+                    .btn-secondary {{ background: rgba(255, 255, 255, 0.05); color: #ffffff; border: 1px solid rgba(255, 255, 255, 0.1); }}
+                    .btn-secondary:hover {{ background: rgba(255, 255, 255, 0.1); transform: translateY(-1px); }}
+                    .back-link {{ text-align: center; margin-top: 32px; }}
+                    .back-link a {{ color: #b3b3b3; text-decoration: none; font-size: 0.95rem; transition: color 0.2s ease; }}
+                    .back-link a:hover {{ color: #1DB954; }}
                     @media (max-width: 768px) {{
-                        .container {{
-                            padding: 20px 16px;
-                        }}
-                        .playlist-container {{
-                            padding: 20px;
-                        }}
-                        .track-item {{
-                            padding: 12px;
-                            gap: 12px;
-                        }}
-                        .actions {{
-                            flex-direction: column;
-                        }}
-                        .btn {{
-                            width: 100%;
-                            justify-content: center;
-                        }}
-                        .track-actions {{
-                            flex-direction: column;
-                            gap: 8px;
-                            align-items: flex-end;
-                        }}
+                        .container {{ padding: 20px 16px; }}
+                        .playlist-container {{ padding: 20px; }}
+                        .track-item {{ padding: 12px; gap: 12px; }}
+                        .actions {{ flex-direction: column; }}
+                        .btn {{ width: 100%; justify-content: center; }}
+                        .track-actions {{ flex-direction: column; gap: 8px; align-items: flex-end; }}
                     }}
                 </style>
             </head>
@@ -1709,12 +1479,10 @@ def recommend():
                         <h1 class="logo">Mooodyyy</h1>
                         <h2 class="result-title">🎯 為你找到了 {len(top10)} 首歌</h2>
                     </div>
-                    
                     <div class="context-display">
                         <div class="context-label">你的情境</div>
                         <div class="context-text">"{safe_text}"</div>
                     </div>
-                    
                     <div class="playlist-container">
                         <div class="playlist-header">
                             <div class="playlist-icon">🎵</div>
@@ -1723,38 +1491,28 @@ def recommend():
                                 <p>基於你的聆聽習慣與情境分析</p>
                             </div>
                         </div>
-                        
                         <div class="tracks-list">
                             {songs_html}
                         </div>
                     </div>
-                    
                     <div class="actions">
                         <form method="POST" action="/recommend" style="display:inline;">
                             <input type="hidden" name="text" value="{safe_text}">
                             <input type="hidden" name="preview" value="1">
                             <input type="hidden" name="avoid" value="{ids_str}">
-                            <button type="submit" class="btn btn-secondary">
-                                🔄 重新生成
-                            </button>
+                            <button type="submit" class="btn btn-secondary">🔄 重新生成</button>
                         </form>
-                        
                         <form method="POST" action="/create_playlist" style="display:inline;">
                             <input type="hidden" name="text" value="{safe_text}">
                             <input type="hidden" name="track_ids" value="{ids_str}">
-                            <button type="submit" class="btn btn-primary">
-                                ➕ 存到 Spotify
-                            </button>
+                            <button type="submit" class="btn btn-primary">➕ 存到 Spotify</button>
                         </form>
                     </div>
-                    
                     <div class="back-link">
                         <a href="/welcome">↩︎ 回到首頁</a>
                     </div>
                 </div>
-                
                 <script>
-                    // 添加載入動畫效果
                     document.addEventListener('DOMContentLoaded', function() {{
                         const tracks = document.querySelectorAll('.track-item');
                         tracks.forEach((track, index) => {{
@@ -1773,19 +1531,21 @@ def recommend():
             '''
             return page
 
-        # 非預覽：直接建私人歌單（向後相容）
-        user   = sp.current_user(); user_id = (user or {{}}).get("id")
+        # === 非預覽：直接建私人歌單（向後相容） ===
+        user   = sp.current_user(); user_id = (user or {}).get("id")
         ts     = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-        title  = f"Mooodyyy · {{ts}} UTC"
-        desc   = f"情境：{{text}}（由即時推薦建立）"
+        title  = f"Mooodyyy · {ts} UTC"
+        desc   = f"情境：{text}（由即時推薦建立）"
         plist  = sp.user_playlist_create(user=user_id, name=title, public=False, description=desc)
         sp.playlist_add_items(playlist_id=plist["id"], items=[t["id"] for t in top10 if t.get("id")])
-        url    = (plist.get("external_urls") or {{}}).get("spotify", url_for("welcome"))
+        url    = (plist.get("external_urls") or {}).get("spotify", url_for("welcome"))
         return redirect(url)
 
     except Exception as e:
-        print(f"❌ recommend error: {{e}}")
-        return f'''
+        # 讓錯誤真的可見，並回 500
+        print("❌ recommend error:", e)
+        print(traceback.format_exc())
+        return '''
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -1793,7 +1553,7 @@ def recommend():
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>系統錯誤 - Mooodyyy</title>
     <style>
-        body {{
+        body {
             font-family: 'Circular', -apple-system, BlinkMacSystemFont, sans-serif;
             background: linear-gradient(135deg, #191414, #0d1117);
             color: #fff;
@@ -1801,20 +1561,15 @@ def recommend():
             display: flex;
             align-items: center;
             justify-content: center;
-        }}
-        .error-container {{
+        }
+        .error-container {
             text-align: center;
             padding: 40px;
             background: rgba(255, 255, 255, 0.02);
             border-radius: 20px;
             border: 1px solid rgba(255, 255, 255, 0.1);
-            max-width: 500px;
-        }}
-        .error-icon {{
-            font-size: 3rem;
-            margin-bottom: 20px;
-        }}
-        .retry-btn {{
+        }
+        .retry-btn {
             background: #1DB954;
             color: #000;
             padding: 12px 24px;
@@ -1823,24 +1578,19 @@ def recommend():
             font-weight: 600;
             margin-top: 20px;
             display: inline-block;
-            transition: all 0.2s ease;
-        }}
-        .retry-btn:hover {{
-            background: #1ed760;
-            transform: translateY(-1px);
-        }}
+        }
     </style>
 </head>
 <body>
     <div class="error-container">
-        <div class="error-icon">😅</div>
-        <h2>系統暫時出錯了</h2>
-        <p>推薦引擎遇到了一些問題，請稍後再試</p>
-        <a href="/welcome" class="retry-btn">回到首頁</a>
+        <h2>😵 系統出錯</h2>
+        <p>我們已記錄錯誤，請回首頁再試一次。</p>
+        <a href="/welcome" class="retry-btn">回首頁</a>
     </div>
 </body>
 </html>
-'''
+        ''', 500
+
 
 @app.route("/create_playlist", methods=["POST"])
 def create_playlist():

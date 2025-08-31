@@ -644,7 +644,179 @@ def collect_external_tracks_by_category(sp, text: str, max_n: int = 200):
 
 @app.route("/")
 def home():
-    return '<a href="/login">🔐 Login with Spotify</a>'
+    return '''
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Mooodyyy - AI 音樂推薦</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Circular', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif;
+            background: linear-gradient(135deg, #191414 0%, #0d1117 50%, #121212 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow-x: hidden;
+        }
+        
+        .hero-container {
+            text-align: center;
+            max-width: 500px;
+            padding: 40px 20px;
+            position: relative;
+        }
+        
+        .logo {
+            font-size: 3.5rem;
+            font-weight: 900;
+            background: linear-gradient(135deg, #1DB954, #1ed760);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 16px;
+            letter-spacing: -2px;
+        }
+        
+        .tagline {
+            font-size: 1.3rem;
+            color: #b3b3b3;
+            margin-bottom: 40px;
+            font-weight: 300;
+            line-height: 1.5;
+        }
+        
+        .login-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            background: linear-gradient(135deg, #1DB954, #1ed760);
+            color: #000;
+            padding: 16px 32px;
+            border-radius: 50px;
+            text-decoration: none;
+            font-weight: 700;
+            font-size: 1.1rem;
+            transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+            box-shadow: 0 8px 32px rgba(29, 185, 84, 0.3);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .login-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 40px rgba(29, 185, 84, 0.4);
+        }
+        
+        .login-btn:active {
+            transform: translateY(0);
+        }
+        
+        .floating-notes {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            overflow: hidden;
+        }
+        
+        .note {
+            position: absolute;
+            color: rgba(29, 185, 84, 0.1);
+            font-size: 2rem;
+            animation: float 8s infinite ease-in-out;
+        }
+        
+        .note:nth-child(1) { left: 10%; animation-delay: 0s; }
+        .note:nth-child(2) { left: 80%; animation-delay: 2s; }
+        .note:nth-child(3) { left: 50%; animation-delay: 4s; }
+        .note:nth-child(4) { left: 20%; animation-delay: 6s; }
+        
+        @keyframes float {
+            0%, 100% { transform: translateY(100vh) rotate(0deg); opacity: 0; }
+            50% { transform: translateY(-20px) rotate(180deg); opacity: 1; }
+        }
+        
+        .features {
+            margin-top: 60px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            max-width: 600px;
+        }
+        
+        .feature {
+            text-align: center;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+        }
+        
+        .feature-icon {
+            font-size: 2rem;
+            margin-bottom: 12px;
+            display: block;
+        }
+        
+        .feature-title {
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #1DB954;
+        }
+        
+        .feature-desc {
+            font-size: 0.9rem;
+            color: #b3b3b3;
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+    <div class="floating-notes">
+        <div class="note">♪</div>
+        <div class="note">♫</div>
+        <div class="note">♪</div>
+        <div class="note">♫</div>
+    </div>
+    
+    <div class="hero-container">
+        <h1 class="logo">Mooodyyy</h1>
+        <p class="tagline">用 AI 讀懂你的心情<br>為每個時刻找到完美音樂</p>
+        
+        <a href="/login" class="login-btn">
+            <span>🎧</span>
+            <span>Connect with Spotify</span>
+        </a>
+        
+        <div class="features">
+            <div class="feature">
+                <span class="feature-icon">🧠</span>
+                <div class="feature-title">智能理解</div>
+                <div class="feature-desc">描述情境，AI 自動解析情緒與場景</div>
+            </div>
+            <div class="feature">
+                <span class="feature-icon">🎯</span>
+                <div class="feature-title">精準推薦</div>
+                <div class="feature-desc">結合你的喜好與音樂特徵分析</div>
+            </div>
+            <div class="feature">
+                <span class="feature-icon">⚡</span>
+                <div class="feature-title">即時生成</div>
+                <div class="feature-desc">秒速創建專屬歌單</div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+'''
 
 
 @app.route("/login")
@@ -663,7 +835,51 @@ def callback():
         return redirect(url_for("welcome"))
     except Exception as e:
         print(f"❌ OAuth callback error: {e}")
-        return "<h3>Authorization failed.</h3><a href='/'>Try again</a>"
+        return '''
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>授權失敗</title>
+    <style>
+        body {
+            font-family: 'Circular', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #191414, #0d1117);
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .error-container {
+            text-align: center;
+            padding: 40px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .retry-btn {
+            background: #1DB954;
+            color: #000;
+            padding: 12px 24px;
+            border-radius: 25px;
+            text-decoration: none;
+            font-weight: 600;
+            margin-top: 20px;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <h2>❌ 授權失敗</h2>
+        <p>連接 Spotify 時發生錯誤</p>
+        <a href="/" class="retry-btn">重新嘗試</a>
+    </div>
+</body>
+</html>
+'''
 
 @app.route("/welcome")
 def welcome():
@@ -678,48 +894,297 @@ def welcome():
     except Exception:
         name = "音樂愛好者"
 
-    return f"""
+    return f'''
 <!doctype html>
 <html lang="zh-Hant">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Mooodyyy · Welcome</title>
-  <style>
-    body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif; background:#0f1115; color:#fff; margin:0;}}
-    .wrap{{max-width:720px; margin:0 auto; padding:32px 20px;}}
-    h1{{margin:0 0 12px;}}
-    p.muted{{color:#aeb4be; margin:6px 0 20px;}}
-    textarea{{width:100%; min-height:140px; padding:12px; font-size:16px; border-radius:10px; border:1px solid #2a2f3a; background:#12161f; color:#e9eef7; box-sizing:border-box;}}
-    button{{padding:10px 16px; border:none; border-radius:10px; cursor:pointer; background:#1DB954; color:#0b0f14; font-weight:700;}}
-    .card{{background:#12161f; border:1px solid #1b2030; border-radius:16px; padding:20px;}}
-    a{{color:#8bd9ff; text-decoration:none;}}
-  </style>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Mooodyyy - 開始創建歌單</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        
+        body {{
+            font-family: 'Circular', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif;
+            background: linear-gradient(135deg, #191414 0%, #0d1117 50%, #121212 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            line-height: 1.6;
+        }}
+        
+        .container {{
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }}
+        
+        .header {{
+            text-align: center;
+            margin-bottom: 40px;
+        }}
+        
+        .logo {{
+            font-size: 2.5rem;
+            font-weight: 900;
+            background: linear-gradient(135deg, #1DB954, #1ed760);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 8px;
+            letter-spacing: -1px;
+        }}
+        
+        .welcome-text {{
+            font-size: 1.2rem;
+            color: #b3b3b3;
+            margin-bottom: 8px;
+        }}
+        
+        .user-name {{
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: #1DB954;
+        }}
+        
+        .main-card {{
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 24px;
+            padding: 40px;
+            backdrop-filter: blur(20px);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            position: relative;
+            overflow: hidden;
+        }}
+        
+        .main-card::before {{
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, #1DB954, transparent);
+        }}
+        
+        .form-title {{
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #ffffff;
+        }}
+        
+        .form-subtitle {{
+            color: #b3b3b3;
+            margin-bottom: 32px;
+            font-size: 1rem;
+        }}
+        
+        .textarea-container {{
+            position: relative;
+            margin-bottom: 24px;
+        }}
+        
+        textarea {{
+            width: 100%;
+            min-height: 120px;
+            padding: 20px;
+            font-size: 1.1rem;
+            border-radius: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            background: rgba(0, 0, 0, 0.2);
+            color: #ffffff;
+            resize: vertical;
+            transition: all 0.3s ease;
+            font-family: inherit;
+            line-height: 1.5;
+        }}
+        
+        textarea:focus {{
+            outline: none;
+            border-color: #1DB954;
+            box-shadow: 0 0 0 3px rgba(29, 185, 84, 0.1);
+            background: rgba(0, 0, 0, 0.4);
+        }}
+        
+        textarea::placeholder {{
+            color: #757575;
+            font-style: italic;
+        }}
+        
+        .submit-btn {{
+            background: linear-gradient(135deg, #1DB954, #1ed760);
+            color: #000000;
+            border: none;
+            padding: 16px 40px;
+            border-radius: 50px;
+            font-size: 1.1rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+            box-shadow: 0 8px 32px rgba(29, 185, 84, 0.25);
+            position: relative;
+            overflow: hidden;
+            width: 100%;
+        }}
+        
+        .submit-btn:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 12px 40px rgba(29, 185, 84, 0.35);
+        }}
+        
+        .submit-btn:active {{
+            transform: translateY(0);
+        }}
+        
+        .examples {{
+            margin-top: 32px;
+            padding: 24px;
+            background: rgba(29, 185, 84, 0.05);
+            border-radius: 16px;
+            border: 1px solid rgba(29, 185, 84, 0.1);
+        }}
+        
+        .examples-title {{
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #1DB954;
+            font-size: 1rem;
+        }}
+        
+        .example-tags {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }}
+        
+        .example-tag {{
+            background: rgba(255, 255, 255, 0.05);
+            color: #b3b3b3;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }}
+        
+        .example-tag:hover {{
+            background: rgba(29, 185, 84, 0.1);
+            color: #1DB954;
+            border-color: rgba(29, 185, 84, 0.2);
+        }}
+        
+        .footer {{
+            text-align: center;
+            margin-top: 40px;
+            padding-top: 24px;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+        }}
+        
+        .logout-link {{
+            color: #b3b3b3;
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: color 0.2s ease;
+        }}
+        
+        .logout-link:hover {{
+            color: #1DB954;
+        }}
+        
+        @media (max-width: 768px) {{
+            .container {{
+                padding: 20px 16px;
+            }}
+            .main-card {{
+                padding: 24px;
+            }}
+            .logo {{
+                font-size: 2.2rem;
+            }}
+            .welcome-text {{
+                font-size: 1.1rem;
+            }}
+        }}
+    </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>🎧 Mooodyyy</h1>
-    <p class="muted">嗨，{name}。描述你的情境，我會推薦一份 10 首的歌單。</p>
-
-    <div class="card">
-      <form action="/recommend" method="post">
-        <textarea name="text" placeholder="例：深夜散步、下雨寫作、想念老朋友、專心讀書的輕音樂…"></textarea>
-
-        <!-- 預設走「先預覽」 -->
-        <input type="hidden" name="preview" value="1">
-
-        <div style="margin-top:12px;">
-          <button type="submit">推薦歌單</button>
+    <div class="container">
+        <div class="header">
+            <h1 class="logo">Mooodyyy</h1>
+            <p class="welcome-text">歡迎回來</p>
+            <p class="user-name">{name}</p>
         </div>
-      </form>
+        
+        <div class="main-card">
+            <h2 class="form-title">描述你的當下情境</h2>
+            <p class="form-subtitle">告訴我你的心情、活動或想要的氛圍，我會為你推薦最適合的歌單</p>
+            
+            <form action="/recommend" method="post">
+                <div class="textarea-container">
+                    <textarea 
+                        name="text" 
+                        placeholder="例如：深夜漫步思考人生、雨天在咖啡廳寫作、想念遠方的朋友、專心讀書需要輕音樂、週五晚上想放鬆..."
+                        required
+                    ></textarea>
+                </div>
+                
+                <input type="hidden" name="preview" value="1">
+                <button type="submit" class="submit-btn">
+                    🎵 開始推薦音樂
+                </button>
+            </form>
+            
+            <div class="examples">
+                <div class="examples-title">💡 靈感提示</div>
+                <div class="example-tags">
+                    <span class="example-tag" onclick="fillExample(this)">深夜散步</span>
+                    <span class="example-tag" onclick="fillExample(this)">下雨天寫作</span>
+                    <span class="example-tag" onclick="fillExample(this)">週末早晨</span>
+                    <span class="example-tag" onclick="fillExample(this)">運動健身</span>
+                    <span class="example-tag" onclick="fillExample(this)">放鬆冥想</span>
+                    <span class="example-tag" onclick="fillExample(this)">專心讀書</span>
+                    <span class="example-tag" onclick="fillExample(this)">思念某人</span>
+                    <span class="example-tag" onclick="fillExample(this)">開車兜風</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <a href="/logout" class="logout-link">登出 Spotify</a>
+        </div>
     </div>
-
-    <p class="muted" style="margin-top:16px;">送出後會先顯示「歌單預覽」。你可以選擇 🔄 重新生成 或 ➕ 存到 Spotify。</p>
-    <p style="text-align:center; margin-top:16px;"><a href="/logout">登出</a></p>
-  </div>
+    
+    <script>
+        function fillExample(element) {{
+            const textarea = document.querySelector('textarea[name="text"]');
+            textarea.value = element.textContent;
+            textarea.focus();
+        }}
+        
+        // 添加一些互動效果
+        document.addEventListener('DOMContentLoaded', function() {{
+            const textarea = document.querySelector('textarea');
+            const submitBtn = document.querySelector('.submit-btn');
+            
+            textarea.addEventListener('input', function() {{
+                if (this.value.trim()) {{
+                    submitBtn.style.opacity = '1';
+                    submitBtn.style.pointerEvents = 'auto';
+                }} else {{
+                    submitBtn.style.opacity = '0.7';
+                }}
+            }});
+        }});
+    </script>
 </body>
 </html>
-"""
+'''
 
 
 @app.route("/recommend", methods=["GET", "POST"])
@@ -843,10 +1308,10 @@ def recommend():
         avoid_ids = set(i for i in avoid_raw.split(",") if len(i) == 22) if avoid_raw else set()
 
         # 你的曲庫所有 id（避免外部重複你的曲庫曲目）
-        user_all_ids = {
+        user_all_ids = {{
             t.get("id") for t in user_pool
             if isinstance(t.get("id"), str) and len(t.get("id")) == 22
-        }
+        }}
 
         # === 4) 混合：3 首你的曲庫 + 7 首外部（避開 avoid_ids + recent_ids） ===
         used = set(avoid_ids) | set(recent_ids)
@@ -891,7 +1356,7 @@ def recommend():
         if preview == "1":
             # 清單：只顯示「歌手 — 歌名」
             items = []
-            for tr in top10:
+            for i, tr in enumerate(top10, 1):
                 name = tr.get("name", "")
                 arts = tr.get("artists", [])
                 if isinstance(arts, list) and arts and isinstance(arts[0], dict):
@@ -900,13 +1365,35 @@ def recommend():
                     artists = ", ".join(str(a) for a in arts)
                 else:
                     artists = str(arts) if arts else ""
-                url = (tr.get("external_urls") or {}).get("spotify") or tr.get("url") or "#"
-                items.append(f"<li><a href='{url}' target='_blank'>{artists} — {name}</a></li>")
+                url = (tr.get("external_urls") or {{}}).get("spotify") or tr.get("url") or "#"
+                
+                # 計算匹配度百分比 (基於 _score)
+                score = tr.get("_score", 0.5)
+                match_percent = int(score * 100)
+                
+                items.append(f'''
+                <div class="track-item">
+                    <div class="track-number">{i:02d}</div>
+                    <div class="track-info">
+                        <div class="track-name">{name}</div>
+                        <div class="track-artist">{artists}</div>
+                    </div>
+                    <div class="track-actions">
+                        <div class="match-score">{match_percent}% 匹配</div>
+                        <a href="{url}" target="_blank" class="spotify-link">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="#1DB954">
+                                <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.6 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.84-.179-.84-.6 0-.359.24-.66.54-.78 4.56-1.021 8.52-.6 11.64.301.42.12.66.54.42.96zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.42 1.56-.301.421-1.02.599-1.56.3z"/>
+                            </svg>
+                        </a>
+                    </div>
+                </div>
+                ''')
+
             songs_html = "\n".join(items)
 
             # 當前這批歌曲 IDs
             ids_str   = ",".join([t.get("id") for t in top10 if isinstance(t.get("id"), str) and len(t.get("id")) == 22])
-            safe_text = text.replace("'", "&#39;")
+            safe_text = text.replace("'", "&#39;").replace('"', '&quot;')
 
             # 把這批寫回情境歷史（新在前、去重保序、最多 40）
             cur_ids = [t.get("id") for t in top10 if isinstance(t.get("id"), str) and len(t.get("id")) == 22]
@@ -914,69 +1401,446 @@ def recommend():
             history[ctx_key] = (cur_ids + old_ids)[:40]
             session["hist"] = history
 
-            page = f"""
+            page = f'''
             <!doctype html>
             <html lang="zh-Hant">
             <head>
-              <meta charset="utf-8">
-              <title>推薦結果（預覽）</title>
-              <meta name="viewport" content="width=device-width,initial-scale=1">
-              <style>
-                body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif; background:#0f1115; color:#fff;}}
-                .wrap{{max-width:800px; margin:24px auto; padding:0 16px;}}
-                button{{padding:10px 12px; border:none; border-radius:8px; cursor:pointer;}}
-                .btn-save{{background:#1DB954; color:#0b0f14; font-weight:700;}}
-                .btn-regen{{background:#2e323c; color:#fff;}}
-                a{{color:#8bd9ff; text-decoration:none;}}
-                ol{{line-height:1.8;}}
-              </style>
+                <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width,initial-scale=1">
+                <title>為你推薦的歌單 - Mooodyyy</title>
+                <style>
+                    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                    
+                    body {{
+                        font-family: 'Circular', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif;
+                        background: linear-gradient(135deg, #191414 0%, #0d1117 50%, #121212 100%);
+                        color: #ffffff;
+                        min-height: 100vh;
+                        line-height: 1.6;
+                    }}
+                    
+                    .container {{
+                        max-width: 900px;
+                        margin: 0 auto;
+                        padding: 40px 20px;
+                    }}
+                    
+                    .header {{
+                        text-align: center;
+                        margin-bottom: 40px;
+                    }}
+                    
+                    .logo {{
+                        font-size: 2rem;
+                        font-weight: 900;
+                        background: linear-gradient(135deg, #1DB954, #1ed760);
+                        -webkit-background-clip: text;
+                        -webkit-text-fill-color: transparent;
+                        background-clip: text;
+                        margin-bottom: 16px;
+                    }}
+                    
+                    .result-title {{
+                        font-size: 1.8rem;
+                        font-weight: 700;
+                        margin-bottom: 12px;
+                        color: #ffffff;
+                    }}
+                    
+                    .context-display {{
+                        background: rgba(29, 185, 84, 0.1);
+                        border: 1px solid rgba(29, 185, 84, 0.2);
+                        border-radius: 16px;
+                        padding: 20px;
+                        margin-bottom: 32px;
+                        text-align: center;
+                    }}
+                    
+                    .context-label {{
+                        color: #1DB954;
+                        font-weight: 600;
+                        font-size: 0.9rem;
+                        text-transform: uppercase;
+                        letter-spacing: 1px;
+                        margin-bottom: 8px;
+                    }}
+                    
+                    .context-text {{
+                        font-size: 1.1rem;
+                        color: #ffffff;
+                        font-style: italic;
+                    }}
+                    
+                    .playlist-container {{
+                        background: rgba(255, 255, 255, 0.02);
+                        border: 1px solid rgba(255, 255, 255, 0.08);
+                        border-radius: 24px;
+                        padding: 32px;
+                        backdrop-filter: blur(20px);
+                        margin-bottom: 32px;
+                        position: relative;
+                        overflow: hidden;
+                    }}
+                    
+                    .playlist-container::before {{
+                        content: '';
+                        position: absolute;
+                        top: 0;
+                        left: 0;
+                        right: 0;
+                        height: 1px;
+                        background: linear-gradient(90deg, transparent, #1DB954, transparent);
+                    }}
+                    
+                    .playlist-header {{
+                        display: flex;
+                        align-items: center;
+                        gap: 12px;
+                        margin-bottom: 24px;
+                        padding-bottom: 16px;
+                        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+                    }}
+                    
+                    .playlist-icon {{
+                        width: 48px;
+                        height: 48px;
+                        background: linear-gradient(135deg, #1DB954, #1ed760);
+                        border-radius: 12px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        font-size: 1.5rem;
+                    }}
+                    
+                    .playlist-info h3 {{
+                        font-size: 1.4rem;
+                        font-weight: 700;
+                        margin-bottom: 4px;
+                    }}
+                    
+                    .playlist-info p {{
+                        color: #b3b3b3;
+                        font-size: 0.95rem;
+                    }}
+                    
+                    .tracks-list {{
+                        display: flex;
+                        flex-direction: column;
+                        gap: 8px;
+                    }}
+                    
+                    .track-item {{
+                        display: flex;
+                        align-items: center;
+                        gap: 16px;
+                        padding: 12px 16px;
+                        border-radius: 12px;
+                        background: rgba(255, 255, 255, 0.02);
+                        border: 1px solid rgba(255, 255, 255, 0.05);
+                        transition: all 0.2s ease;
+                        position: relative;
+                        overflow: hidden;
+                    }}
+                    
+                    .track-item:hover {{
+                        background: rgba(29, 185, 84, 0.05);
+                        border-color: rgba(29, 185, 84, 0.1);
+                        transform: translateX(4px);
+                    }}
+                    
+                    .track-number {{
+                        font-size: 0.9rem;
+                        color: #757575;
+                        font-weight: 600;
+                        width: 24px;
+                        text-align: center;
+                    }}
+                    
+                    .track-info {{
+                        flex: 1;
+                        min-width: 0;
+                    }}
+                    
+                    .track-name {{
+                        font-weight: 600;
+                        font-size: 1rem;
+                        color: #ffffff;
+                        margin-bottom: 2px;
+                        overflow: hidden;
+                        text-overflow: ellipsis;
+                        white-space: nowrap;
+                    }}
+                    
+                    .track-artist {{
+                        color: #b3b3b3;
+                        font-size: 0.9rem;
+                        overflow: hidden;
+                        text-overflow: ellipsis;
+                        white-space: nowrap;
+                    }}
+                    
+                    .track-actions {{
+                        display: flex;
+                        align-items: center;
+                        gap: 12px;
+                    }}
+                    
+                    .match-score {{
+                        background: rgba(29, 185, 84, 0.1);
+                        color: #1DB954;
+                        padding: 4px 8px;
+                        border-radius: 8px;
+                        font-size: 0.8rem;
+                        font-weight: 600;
+                        border: 1px solid rgba(29, 185, 84, 0.2);
+                    }}
+                    
+                    .spotify-link {{
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        width: 36px;
+                        height: 36px;
+                        border-radius: 50%;
+                        background: rgba(29, 185, 84, 0.1);
+                        border: 1px solid rgba(29, 185, 84, 0.2);
+                        transition: all 0.2s ease;
+                        text-decoration: none;
+                    }}
+                    
+                    .spotify-link:hover {{
+                        background: #1DB954;
+                        transform: scale(1.1);
+                    }}
+                    
+                    .spotify-link:hover svg {{
+                        fill: #000000;
+                    }}
+                    
+                    .actions {{
+                        display: flex;
+                        gap: 16px;
+                        margin-top: 32px;
+                        justify-content: center;
+                        flex-wrap: wrap;
+                    }}
+                    
+                    .btn {{
+                        padding: 14px 28px;
+                        border: none;
+                        border-radius: 50px;
+                        cursor: pointer;
+                        font-weight: 700;
+                        font-size: 1rem;
+                        transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+                        text-decoration: none;
+                        display: inline-flex;
+                        align-items: center;
+                        gap: 8px;
+                    }}
+                    
+                    .btn-primary {{
+                        background: linear-gradient(135deg, #1DB954, #1ed760);
+                        color: #000000;
+                        box-shadow: 0 6px 24px rgba(29, 185, 84, 0.25);
+                    }}
+                    
+                    .btn-primary:hover {{
+                        transform: translateY(-2px);
+                        box-shadow: 0 8px 32px rgba(29, 185, 84, 0.35);
+                    }}
+                    
+                    .btn-secondary {{
+                        background: rgba(255, 255, 255, 0.05);
+                        color: #ffffff;
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                    }}
+                    
+                    .btn-secondary:hover {{
+                        background: rgba(255, 255, 255, 0.1);
+                        transform: translateY(-1px);
+                    }}
+                    
+                    .back-link {{
+                        text-align: center;
+                        margin-top: 32px;
+                    }}
+                    
+                    .back-link a {{
+                        color: #b3b3b3;
+                        text-decoration: none;
+                        font-size: 0.95rem;
+                        transition: color 0.2s ease;
+                    }}
+                    
+                    .back-link a:hover {{
+                        color: #1DB954;
+                    }}
+                    
+                    @media (max-width: 768px) {{
+                        .container {{
+                            padding: 20px 16px;
+                        }}
+                        .playlist-container {{
+                            padding: 20px;
+                        }}
+                        .track-item {{
+                            padding: 12px;
+                            gap: 12px;
+                        }}
+                        .actions {{
+                            flex-direction: column;
+                        }}
+                        .btn {{
+                            width: 100%;
+                            justify-content: center;
+                        }}
+                        .track-actions {{
+                            flex-direction: column;
+                            gap: 8px;
+                            align-items: flex-end;
+                        }}
+                    }}
+                </style>
             </head>
             <body>
-              <div class="wrap">
-                <h1>🎯 為你找到了 {len(top10)} 首歌</h1>
-                <p><strong>你的情境：</strong>"{safe_text}"</p>
-                <ol>
-                  {songs_html}
-                </ol>
-                <div style="margin:20px 0; display:flex; gap:10px; flex-wrap:wrap;">
-                  <!-- 重新生成：帶本批 ids 作為 avoid，避免重複 -->
-                  <form method="POST" action="/recommend" style="display:inline;">
-                    <input type="hidden" name="text" value="{safe_text}">
-                    <input type="hidden" name="preview" value="1">
-                    <input type="hidden" name="avoid" value="{ids_str}">
-                    <button type="submit" class="btn-regen">🔄 重新生成</button>
-                  </form>
-                  <!-- 存到 Spotify（私人） -->
-                  <form method="POST" action="/create_playlist" style="display:inline;">
-                    <input type="hidden" name="text" value="{safe_text}">
-                    <input type="hidden" name="track_ids" value="{ids_str}">
-                    <button type="submit" class="btn-save">➕ 存到 Spotify</button>
-                  </form>
+                <div class="container">
+                    <div class="header">
+                        <h1 class="logo">Mooodyyy</h1>
+                        <h2 class="result-title">🎯 為你找到了 {len(top10)} 首歌</h2>
+                    </div>
+                    
+                    <div class="context-display">
+                        <div class="context-label">你的情境</div>
+                        <div class="context-text">"{safe_text}"</div>
+                    </div>
+                    
+                    <div class="playlist-container">
+                        <div class="playlist-header">
+                            <div class="playlist-icon">🎵</div>
+                            <div class="playlist-info">
+                                <h3>專屬推薦歌單</h3>
+                                <p>基於你的聆聽習慣與情境分析</p>
+                            </div>
+                        </div>
+                        
+                        <div class="tracks-list">
+                            {songs_html}
+                        </div>
+                    </div>
+                    
+                    <div class="actions">
+                        <form method="POST" action="/recommend" style="display:inline;">
+                            <input type="hidden" name="text" value="{safe_text}">
+                            <input type="hidden" name="preview" value="1">
+                            <input type="hidden" name="avoid" value="{ids_str}">
+                            <button type="submit" class="btn btn-secondary">
+                                🔄 重新生成
+                            </button>
+                        </form>
+                        
+                        <form method="POST" action="/create_playlist" style="display:inline;">
+                            <input type="hidden" name="text" value="{safe_text}">
+                            <input type="hidden" name="track_ids" value="{ids_str}">
+                            <button type="submit" class="btn btn-primary">
+                                ➕ 存到 Spotify
+                            </button>
+                        </form>
+                    </div>
+                    
+                    <div class="back-link">
+                        <a href="/welcome">↩︎ 回到首頁</a>
+                    </div>
                 </div>
-                <p><a href="/welcome">↩︎ 回首頁</a></p>
-              </div>
+                
+                <script>
+                    // 添加載入動畫效果
+                    document.addEventListener('DOMContentLoaded', function() {{
+                        const tracks = document.querySelectorAll('.track-item');
+                        tracks.forEach((track, index) => {{
+                            track.style.opacity = '0';
+                            track.style.transform = 'translateY(20px)';
+                            setTimeout(() => {{
+                                track.style.transition = 'all 0.5s ease';
+                                track.style.opacity = '1';
+                                track.style.transform = 'translateY(0)';
+                            }}, index * 100);
+                        }});
+                    }});
+                </script>
             </body>
             </html>
-            """
+            '''
             return page
 
         # 非預覽：直接建私人歌單（向後相容）
-        user   = sp.current_user(); user_id = (user or {}).get("id")
+        user   = sp.current_user(); user_id = (user or {{}}).get("id")
         ts     = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-        title  = f"Mooodyyy · {ts} UTC"
-        desc   = f"情境：{text}（由即時推薦建立）"
+        title  = f"Mooodyyy · {{ts}} UTC"
+        desc   = f"情境：{{text}}（由即時推薦建立）"
         plist  = sp.user_playlist_create(user=user_id, name=title, public=False, description=desc)
         sp.playlist_add_items(playlist_id=plist["id"], items=[t["id"] for t in top10 if t.get("id")])
-        url    = (plist.get("external_urls") or {}).get("spotify", url_for("welcome"))
+        url    = (plist.get("external_urls") or {{}}).get("spotify", url_for("welcome"))
         return redirect(url)
 
     except Exception as e:
-        print(f"❌ recommend error: {e}")
-        return (
-            "<h2>❌ 系統暫時出錯</h2>"
-            f"<p>錯誤訊息：{str(e)}</p>"
-            "<a href='/welcome'>回首頁</a>"
-        )
+        print(f"❌ recommend error: {{e}}")
+        return f'''
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>系統錯誤 - Mooodyyy</title>
+    <style>
+        body {{
+            font-family: 'Circular', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #191414, #0d1117);
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }}
+        .error-container {{
+            text-align: center;
+            padding: 40px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            max-width: 500px;
+        }}
+        .error-icon {{
+            font-size: 3rem;
+            margin-bottom: 20px;
+        }}
+        .retry-btn {{
+            background: #1DB954;
+            color: #000;
+            padding: 12px 24px;
+            border-radius: 25px;
+            text-decoration: none;
+            font-weight: 600;
+            margin-top: 20px;
+            display: inline-block;
+            transition: all 0.2s ease;
+        }}
+        .retry-btn:hover {{
+            background: #1ed760;
+            transform: translateY(-1px);
+        }}
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <div class="error-icon">😅</div>
+        <h2>系統暫時出錯了</h2>
+        <p>推薦引擎遇到了一些問題，請稍後再試</p>
+        <a href="/welcome" class="retry-btn">回到首頁</a>
+    </div>
+</body>
+</html>
+'''
 
 @app.route("/create_playlist", methods=["POST"])
 def create_playlist():
@@ -991,11 +1855,51 @@ def create_playlist():
     ids = [i for i in track_ids_raw.split(",") if len(i) == 22] if track_ids_raw else []
 
     if not ids:
-        return (
-            "<h3>沒有要加入的歌曲</h3>"
-            "<p>請先在預覽頁按「存到 Spotify」。</p>"
-            "<p><a href='/welcome'>↩︎ 回首頁</a></p>"
-        )
+        return '''
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>建立歌單失敗 - Mooodyyy</title>
+    <style>
+        body {
+            font-family: 'Circular', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #191414, #0d1117);
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .error-container {
+            text-align: center;
+            padding: 40px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .retry-btn {
+            background: #1DB954;
+            color: #000;
+            padding: 12px 24px;
+            border-radius: 25px;
+            text-decoration: none;
+            font-weight: 600;
+            margin-top: 20px;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <h3>❌ 沒有歌曲可以加入</h3>
+        <p>請先生成歌單預覽，再點擊「存到 Spotify」</p>
+        <a href="/welcome" class="retry-btn">↩︎ 回首頁</a>
+    </div>
+</body>
+</html>
+'''
 
     try:
         # 2) 建立「私人」歌單並加入歌曲
@@ -1013,17 +1917,139 @@ def create_playlist():
         )
         sp.playlist_add_items(playlist_id=playlist["id"], items=ids)
 
-        # 3) 成功後直接跳到 Spotify
-        url = (playlist.get("external_urls") or {}).get("spotify", url_for("welcome"))
-        return redirect(url)
+        # 3) 成功頁面，然後自動跳轉到 Spotify
+        playlist_url = (playlist.get("external_urls") or {}).get("spotify", url_for("welcome"))
+        
+        return f'''
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>歌單建立成功 - Mooodyyy</title>
+    <style>
+        body {{
+            font-family: 'Circular', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #191414, #0d1117);
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }}
+        .success-container {{
+            text-align: center;
+            padding: 40px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 20px;
+            border: 1px solid rgba(29, 185, 84, 0.2);
+            max-width: 500px;
+            position: relative;
+            overflow: hidden;
+        }}
+        .success-container::before {{
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, #1DB954, transparent);
+        }}
+        .success-icon {{
+            font-size: 4rem;
+            margin-bottom: 20px;
+            animation: bounce 1s ease-in-out;
+        }}
+        .spotify-btn {{
+            background: #1DB954;
+            color: #000;
+            padding: 16px 32px;
+            border-radius: 25px;
+            text-decoration: none;
+            font-weight: 700;
+            margin: 20px 10px;
+            display: inline-block;
+            transition: all 0.2s ease;
+        }}
+        .home-btn {{
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 25px;
+            text-decoration: none;
+            font-weight: 600;
+            margin: 10px;
+            display: inline-block;
+        }}
+        @keyframes bounce {{
+            0%, 20%, 60%, 100% {{ transform: translateY(0); }}
+            40% {{ transform: translateY(-10px); }}
+            80% {{ transform: translateY(-5px); }}
+        }}
+    </style>
+    <meta http-equiv="refresh" content="3;url={playlist_url}">
+</head>
+<body>
+    <div class="success-container">
+        <div class="success-icon">🎉</div>
+        <h2>歌單建立成功！</h2>
+        <p>你的專屬歌單已保存到 Spotify</p>
+        <p style="color: #b3b3b3; margin: 16px 0;">正在跳轉到 Spotify...</p>
+        <a href="{playlist_url}" class="spotify-btn">🎧 在 Spotify 中打開</a>
+        <a href="/welcome" class="home-btn">↩︎ 回首頁</a>
+    </div>
+</body>
+</html>
+'''
 
     except Exception as e:
         print(f"❌ create_playlist error: {e}")
-        return (
-            "<h2>❌ 建立歌單失敗</h2>"
-            f"<p>錯誤訊息：{str(e)}</p>"
-            "<p><a href='/welcome'>↩︎ 回首頁</a></p>"
-        )
+        return f'''
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>建立失敗 - Mooodyyy</title>
+    <style>
+        body {{
+            font-family: 'Circular', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #191414, #0d1117);
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }}
+        .error-container {{
+            text-align: center;
+            padding: 40px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }}
+        .retry-btn {{
+            background: #1DB954;
+            color: #000;
+            padding: 12px 24px;
+            border-radius: 25px;
+            text-decoration: none;
+            font-weight: 600;
+            margin-top: 20px;
+            display: inline-block;
+        }}
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <h2>❌ 建立歌單失敗</h2>
+        <p>錯誤訊息：{str(e)}</p>
+        <a href="/welcome" class="retry-btn">↩︎ 回首頁</a>
+    </div>
+</body>
+</html>
+'''
 
 
 @app.route("/logout")

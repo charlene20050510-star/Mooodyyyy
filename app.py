@@ -1266,7 +1266,7 @@ def recommend():
     if not sp:
         return redirect(url_for("home"))
 
-    # ========= 小工具 =========
+    # ========= 小工具（封裝在 route 內，方便一次貼上） =========
     _CJK_RE = re.compile(r'[\u4e00-\u9fff]')  # 中日韓漢字
 
     def _lang_hint_from_text(text: str):
@@ -1304,7 +1304,7 @@ def recommend():
         return out
 
     def _weighted_pick(tracks, k=3):
-        """根據 _score 權重抽樣"""
+        """根據 _score 權重抽樣，避免永遠同幾首（高分仍較易被選）"""
         bag = [t for t in tracks if isinstance(t.get("_score"), (int, float))]
         if not bag:
             return tracks[:k]
@@ -1342,11 +1342,11 @@ def recommend():
 
     # ========= 情境歷史（跨多次避重） =========
     ctx_key = (" ".join(text.lower().split()))[:80]
-    history = session.get("hist", {})
-    recent_ids = history.get(ctx_key, [])[:40]
+    history = session.get("hist", {})              # { ctx_key: [track_id, ...] }
+    recent_ids = history.get(ctx_key, [])[:40]     # 最近 4 批（最多 40 首）
 
     try:
-        # === 1) 收集候選池 ===
+        # === 1) 收集候選池（縮小以加速） ===
         params    = map_text_to_params(text)
         user_pool = collect_user_tracks(sp, max_n=100)
         ext_pool  = collect_external_tracks_by_category(sp, text, 150)
@@ -1357,43 +1357,46 @@ def recommend():
             tid = tr.get("id")
             if isinstance(tid, str) and len(tid) == 22:
                 ids_for_feat.append(tid)
-                if len(ids_for_feat) >= 250:
+                if len(ids_for_feat) >= 250:  # 上限 250 → 更快
                     break
         feats   = audio_features_map(sp, ids_for_feat)
         sem_map = build_semantic_map(text, user_pool + ext_pool, feats)
 
-        # === 3) 排序 ===
+        # === 3) 排序（top_n 放寬，給抽樣空間） ===
         user_candidates = rank_pool_by_semantic_and_features(user_pool, feats, sem_map, params, top_n=20)
         ext_candidates  = rank_pool_by_semantic_and_features(ext_pool,  feats, sem_map, params, top_n=200)
 
+        # 輕度打散
         random.shuffle(user_candidates)
         random.shuffle(ext_candidates)
 
-        # === 3.5) 語言偏好 ===
-        want_lang = _lang_hint_from_text(text)
+        # === 3.5) 語言偏好（英文/中文） ===
+        want_lang = _lang_hint_from_text(text)  # 'en' / 'zh' / None
         if want_lang in ("en", "zh"):
             user_candidates = _lang_filter(user_candidates, want_lang)
             ext_candidates  = _lang_filter(ext_candidates,  want_lang)
 
-        # === 4) 混合 ===
+        # 讀取上一批要避開（由預覽頁傳回）
         avoid_raw = (request.form.get("avoid") or request.args.get("avoid") or "").strip()
         avoid_ids = set(i for i in avoid_raw.split(",") if len(i) == 22) if avoid_raw else set()
 
+        # 你的曲庫所有 id（避免外部重複你的曲庫曲目）—— 修正為正確的 set comprehension
         user_all_ids = {
             t.get("id") for t in user_pool
             if isinstance(t.get("id"), str) and len(t.get("id")) == 22
         }
 
+        # === 4) 混合：3 首你的曲庫 + 7 首外部（避開 avoid_ids + recent_ids） ===
         used = set(avoid_ids) | set(recent_ids)
 
-        # 4a) 曲庫 3 首
+        # 4a) 曲庫錨點（加權抽樣取 3）
         anchors_pool = [t for t in user_candidates if isinstance(t.get("id"), str) and t["id"] not in used][:20]
         anchors = _weighted_pick(anchors_pool, k=3)
         for tr in anchors:
             if isinstance(tr.get("id"), str):
                 used.add(tr["id"])
 
-        # 4b) 外部 7 首
+        # 4b) 外部 7 首（避免同藝人洗版、避開 used 與你的曲庫）
         ext_chosen, seen_artists = [], set()
         for tr in ext_candidates:
             if len(ext_chosen) >= 7:
@@ -1409,6 +1412,7 @@ def recommend():
             seen_artists.add(aid)
             ext_chosen.append(tr); used.add(tid)
 
+        # 不足就放寬補滿到 7
         if len(ext_chosen) < 7:
             for tr in ext_candidates:
                 if len(ext_chosen) >= 7:
@@ -1420,9 +1424,10 @@ def recommend():
 
         top10 = (anchors + ext_chosen)[:10]
 
-        # === 5) 預覽頁 ===
+        # === 5) 預覽頁（精簡顯示、無「匹配度」） ===
         preview = (request.values.get("preview") or "").strip()
         if preview == "1":
+            # 清單：只顯示「歌手 — 歌名」
             items = []
             for i, tr in enumerate(top10, 1):
                 name = tr.get("name", "")
@@ -1454,33 +1459,144 @@ def recommend():
 
             songs_html = "\n".join(items)
 
+            # 當前這批歌曲 IDs
             ids_str   = ",".join([t.get("id") for t in top10 if isinstance(t.get("id"), str) and len(t.get("id")) == 22])
             safe_text = text.replace("'", "&#39;").replace('"', '&quot;')
 
+            # 把這批寫回情境歷史（新在前、去重保序、最多 40）
             cur_ids = [t.get("id") for t in top10 if isinstance(t.get("id"), str) and len(t.get("id")) == 22]
             old_ids = [x for x in recent_ids if x not in cur_ids]
             history[ctx_key] = (cur_ids + old_ids)[:40]
             session["hist"] = history
 
-            page = f"""<!doctype html>
-<html lang="zh-Hant">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>為你推薦的歌單 - Mooodyyy</title></head>
-<body>
-<div class="container">
-    <div class="header">
-        <h1 class="logo">Mooodyyy</h1>
-        <h2 class="result-title">🎯 為你找到了 {len(top10)} 首歌</h2>
-    </div>
-    <div class="context-display">"{safe_text}"</div>
-    <div class="playlist-container">
-        <div class="tracks-list">{songs_html}</div>
-    </div>
-</div>
-</body></html>"""
+            page = f'''
+            <!doctype html>
+            <html lang="zh-Hant">
+            <head>
+                <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width,initial-scale=1">
+                <title>為你推薦的歌單 - Mooodyyy</title>
+                <style>
+                    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                    body {{
+                        font-family: 'Circular', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif;
+                        background: linear-gradient(135deg, #191414 0%, #0d1117 50%, #121212 100%);
+                        color: #ffffff;
+                        min-height: 100vh;
+                        line-height: 1.6;
+                    }}
+                    .container {{ max-width: 900px; margin: 0 auto; padding: 40px 20px; }}
+                    .header {{ text-align: center; margin-bottom: 40px; }}
+                    .logo {{ font-size: 2rem; font-weight: 900; background: linear-gradient(135deg, #1DB954, #1ed760);
+                             -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; margin-bottom: 16px; }}
+                    .result-title {{ font-size: 1.8rem; font-weight: 700; margin-bottom: 12px; color: #ffffff; }}
+                    .context-display {{ background: rgba(29, 185, 84, 0.1); border: 1px solid rgba(29, 185, 84, 0.2); border-radius: 16px;
+                                        padding: 20px; margin-bottom: 32px; text-align: center; }}
+                    .context-label {{ color: #1DB954; font-weight: 600; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }}
+                    .context-text {{ font-size: 1.1rem; color: #ffffff; font-style: italic; }}
+                    .playlist-container {{ background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 24px;
+                                           padding: 32px; backdrop-filter: blur(20px); margin-bottom: 32px; position: relative; overflow: hidden; }}
+                    .playlist-container::before {{ content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+                                                   background: linear-gradient(90deg, transparent, #1DB954, transparent); }}
+                    .playlist-header {{ display: flex; align-items: center; gap: 12px; margin-bottom: 24px; padding-bottom: 16px;
+                                        border-bottom: 1px solid rgba(255, 255, 255, 0.05); }}
+                    .playlist-icon {{ width: 48px; height: 48px; background: linear-gradient(135deg, #1DB954, #1ed760); border-radius: 12px;
+                                      display: flex; align-items: center; justify-content: center; font-size: 1.5rem; }}
+                    .playlist-info h3 {{ font-size: 1.4rem; font-weight: 700; margin-bottom: 4px; }}
+                    .playlist-info p {{ color: #b3b3b3; font-size: 0.95rem; }}
+                    .tracks-list {{ display: flex; flex-direction: column; gap: 8px; }}
+                    .track-item {{ display: flex; align-items: center; gap: 16px; padding: 12px 16px; border-radius: 12px;
+                                   background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05); transition: all 0.2s ease;
+                                   position: relative; overflow: hidden; }}
+                    .track-item:hover {{ background: rgba(29, 185, 84, 0.05); border-color: rgba(29, 185, 84, 0.1); transform: translateX(4px); }}
+                    .track-number {{ font-size: 0.9rem; color: #757575; font-weight: 600; width: 24px; text-align: center; }}
+                    .track-info {{ flex: 1; min-width: 0; }}
+                    .track-name {{ font-weight: 600; font-size: 1rem; color: #ffffff; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+                    .track-artist {{ color: #b3b3b3; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+                    .track-actions {{ display: flex; align-items: center; gap: 12px; }}
+                    .spotify-link {{ display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%;
+                                     background: rgba(29, 185, 84, 0.1); border: 1px solid rgba(29, 185, 84, 0.2); transition: all 0.2s ease; text-decoration: none; }}
+                    .spotify-link:hover {{ background: #1DB954; transform: scale(1.1); }}
+                    .spotify-link:hover svg {{ fill: #000000; }}
+                    .actions {{ display: flex; gap: 16px; margin-top: 32px; justify-content: center; flex-wrap: wrap; }}
+                    .btn {{ padding: 14px 28px; border: none; border-radius: 50px; cursor: pointer; font-weight: 700; font-size: 1rem;
+                            transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94); text-decoration: none; display: inline-flex; align-items: center; gap: 8px; }}
+                    .btn-primary {{ background: linear-gradient(135deg, #1DB954, #1ed760); color: #000000; box-shadow: 0 6px 24px rgba(29, 185, 84, 0.25); }}
+                    .btn-primary:hover {{ transform: translateY(-2px); box-shadow: 0 8px 32px rgba(29, 185, 84, 0.35); }}
+                    .btn-secondary {{ background: rgba(255, 255, 255, 0.05); color: #ffffff; border: 1px solid rgba(255, 255, 255, 0.1); }}
+                    .btn-secondary:hover {{ background: rgba(255, 255, 255, 0.1); transform: translateY(-1px); }}
+                    .back-link {{ text-align: center; margin-top: 32px; }}
+                    .back-link a {{ color: #b3b3b3; text-decoration: none; font-size: 0.95rem; transition: color 0.2s ease; }}
+                    .back-link a:hover {{ color: #1DB954; }}
+                    @media (max-width: 768px) {{
+                        .container {{ padding: 20px 16px; }}
+                        .playlist-container {{ padding: 20px; }}
+                        .track-item {{ padding: 12px; gap: 12px; }}
+                        .actions {{ flex-direction: column; }}
+                        .btn {{ width: 100%; justify-content: center; }}
+                        .track-actions {{ flex-direction: column; gap: 8px; align-items: flex-end; }}
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <h1 class="logo">Mooodyyy</h1>
+                        <h2 class="result-title">🎯 為你找到了 {len(top10)} 首歌</h2>
+                    </div>
+                    <div class="context-display">
+                        <div class="context-label">你的情境</div>
+                        <div class="context-text">"{safe_text}"</div>
+                    </div>
+                    <div class="playlist-container">
+                        <div class="playlist-header">
+                            <div class="playlist-icon">🎵</div>
+                            <div class="playlist-info">
+                                <h3>專屬推薦歌單</h3>
+                                <p>基於你的聆聽習慣與情境分析</p>
+                            </div>
+                        </div>
+                        <div class="tracks-list">
+                            {songs_html}
+                        </div>
+                    </div>
+                    <div class="actions">
+                        <form method="POST" action="/recommend" style="display:inline;">
+                            <input type="hidden" name="text" value="{safe_text}">
+                            <input type="hidden" name="preview" value="1">
+                            <input type="hidden" name="avoid" value="{ids_str}">
+                            <button type="submit" class="btn btn-secondary">🔄 重新生成</button>
+                        </form>
+                        <form method="POST" action="/create_playlist" style="display:inline;">
+                            <input type="hidden" name="text" value="{safe_text}">
+                            <input type="hidden" name="track_ids" value="{ids_str}">
+                            <button type="submit" class="btn btn-primary">➕ 存到 Spotify</button>
+                        </form>
+                    </div>
+                    <div class="back-link">
+                        <a href="/welcome">↩︎ 回到首頁</a>
+                    </div>
+                </div>
+                <script>
+                    document.addEventListener('DOMContentLoaded', function() {{
+                        const tracks = document.querySelectorAll('.track-item');
+                        tracks.forEach((track, index) => {{
+                            track.style.opacity = '0';
+                            track.style.transform = 'translateY(20px)';
+                            setTimeout(() => {{
+                                track.style.transition = 'all 0.5s ease';
+                                track.style.opacity = '1';
+                                track.style.transform = 'translateY(0)';
+                            }}, index * 100);
+                        }});
+                    }});
+                </script>
+            </body>
+            </html>
+            '''
             return page
 
-        # === 非預覽：直接建歌單 ===
+        # === 非預覽：直接建私人歌單（向後相容） ===
         user   = sp.current_user(); user_id = (user or {}).get("id")
         ts     = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
         title  = f"Mooodyyy · {ts} UTC"
@@ -1491,11 +1607,54 @@ def recommend():
         return redirect(url)
 
     except Exception as e:
+        # 讓錯誤真的可見，並回 500
         print("❌ recommend error:", e)
         print(traceback.format_exc())
-        return "<h2>😵 系統出錯，請稍後重試</h2>"
-
-
+        return '''
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>系統錯誤 - Mooodyyy</title>
+    <style>
+        body {{
+            font-family: 'Circular', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #191414, #0d1117);
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }}
+        .error-container {{
+            text-align: center;
+            padding: 40px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }}
+        .retry-btn {{
+            background: #1DB954;
+            color: #000;
+            padding: 12px 24px;
+            border-radius: 25px;
+            text-decoration: none;
+            font-weight: 600;
+            margin-top: 20px;
+            display: inline-block;
+        }}
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <h2>😵 系統出錯</h2>
+        <p>我們已記錄錯誤，請稍後重試</p>
+        <a href="/welcome" class="retry-btn">回首頁</a>
+    </div>
+</body>
+</html>
+'''
 
 @app.route("/create_playlist", methods=["POST"])
 def create_playlist():

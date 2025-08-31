@@ -1098,7 +1098,59 @@ def welcome():
         .logout-link:hover {{
             color: #1DB954;
         }}
-        
+
+        /* ===== Loading Overlay (glassmorphism, Spotify 深色系) ===== */
+        .loading-overlay {{
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0);
+            backdrop-filter: blur(0px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .35s ease, background .35s ease, backdrop-filter .35s ease;
+            z-index: 9999;
+        }}
+        .loading-overlay.show {{
+            opacity: 1;
+            background: rgba(0,0,0,0.75);
+            backdrop-filter: blur(6px);
+            pointer-events: all;
+        }}
+        .loading-card {{
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 14px;
+            padding: 32px 28px;
+            border-radius: 20px;
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.12);
+            box-shadow: 0 8px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
+        }}
+        .loading-logo {{
+            width: 72px; height: 72px;
+            border-radius: 18px;
+            display: grid; place-items: center;
+            background: radial-gradient(circle at 30% 30%, #1ed760, #1DB954 60%, #128a3e 100%);
+            filter: drop-shadow(0 6px 24px rgba(29,185,84,.35));
+        }}
+        .loading-logo svg {{
+            width: 38px; height: 38px;
+            fill: #000;
+        }}
+        .loading-text {{
+            color: #e8e8e8;
+            font-weight: 700;
+            letter-spacing: .2px;
+        }}
+        .loading-sub {{
+            color: #b3b3b3;
+            font-size: .92rem;
+        }}
+
         @media (max-width: 768px) {{
             .container {{
                 padding: 20px 16px;
@@ -1127,7 +1179,7 @@ def welcome():
             <h2 class="form-title">描述你的當下情境</h2>
             <p class="form-subtitle">告訴我你的心情、活動或想要的氛圍，我會為你推薦最適合的歌單</p>
             
-            <form action="/recommend" method="post">
+            <form id="gen-form" action="/recommend" method="post">
                 <div class="textarea-container">
                     <textarea 
                         name="text" 
@@ -1161,6 +1213,20 @@ def welcome():
             <a href="/logout" class="logout-link">登出 Spotify</a>
         </div>
     </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loading">
+        <div class="loading-card">
+            <div class="loading-logo" aria-hidden="true">
+                <!-- Spotify glyph -->
+                <svg viewBox="0 0 24 24" role="img" aria-label="Spotify">
+                    <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.6 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.84-.179-.84-.6 0-.359.24-.66.54-.78 4.56-1.021 8.52-.6 11.64.301.42.12.66.54.42.96zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.42 1.56-.301.421-1.02.599-1.56.3z"/>
+                </svg>
+            </div>
+            <div class="loading-text">🎧 為你量身打造歌單中...</div>
+            <div class="loading-sub">Mooodyyy 正在理解你的情境與喜好</div>
+        </div>
+    </div>
     
     <script>
         function fillExample(element) {{
@@ -1169,10 +1235,11 @@ def welcome():
             textarea.focus();
         }}
         
-        // 添加一些互動效果
         document.addEventListener('DOMContentLoaded', function() {{
             const textarea = document.querySelector('textarea');
             const submitBtn = document.querySelector('.submit-btn');
+            const form = document.getElementById('gen-form');
+            const loading = document.getElementById('loading');
             
             textarea.addEventListener('input', function() {{
                 if (this.value.trim()) {{
@@ -1182,11 +1249,17 @@ def welcome():
                     submitBtn.style.opacity = '0.7';
                 }}
             }});
+
+            // 提交時顯示 Loading Overlay（不阻擋原本 form 提交）
+            form.addEventListener('submit', function() {{
+                loading.classList.add('show');
+            }});
         }});
     </script>
 </body>
 </html>
 '''
+
 @app.route("/recommend", methods=["GET", "POST"])
 def recommend():
     import traceback  # 就地引用，免動上面 imports
@@ -1309,10 +1382,10 @@ def recommend():
         avoid_ids = set(i for i in avoid_raw.split(",") if len(i) == 22) if avoid_raw else set()
 
         # 你的曲庫所有 id（避免外部重複你的曲庫曲目）
-        user_all_ids = {
+        user_all_ids = {{
             t.get("id") for t in user_pool
             if isinstance(t.get("id"), str) and len(t.get("id")) == 22
-        }
+        }}
 
         # === 4) 混合：3 首你的曲庫 + 7 首外部（避開 avoid_ids + recent_ids） ===
         used = set(avoid_ids) | set(recent_ids)
@@ -1352,7 +1425,7 @@ def recommend():
 
         top10 = (anchors + ext_chosen)[:10]
 
-        # === 5) 預覽頁（精簡顯示、無序號） ===
+        # === 5) 預覽頁（精簡顯示、無「匹配度」） ===
         preview = (request.values.get("preview") or "").strip()
         if preview == "1":
             # 清單：只顯示「歌手 — 歌名」
@@ -1366,23 +1439,20 @@ def recommend():
                     artists = ", ".join(str(a) for a in arts)
                 else:
                     artists = str(arts) if arts else ""
-                url = (tr.get("external_urls") or {}).get("spotify") or tr.get("url") or "#"
+                url = (tr.get("external_urls") or {{}}).get("spotify") or tr.get("url") or "#"
 
-                # 計算匹配度百分比 (基於 _score)
-                score = tr.get("_score", 0.5)
-                match_percent = int(score * 100)
+                # ❶（已刪除）匹配度的計算與顯示
 
                 items.append(f'''
                 <div class="track-item">
-                    <div class="track-number">{i:02d}</div>
+                    <div class="track-number">{{i:02d}}</div>
                     <div class="track-info">
-                        <div class="track-name">{name}</div>
-                        <div class="track-artist">{artists}</div>
+                        <div class="track-name">{{name}}</div>
+                        <div class="track-artist">{{artists}}</div>
                     </div>
                     <div class="track-actions">
-                        <div class="match-score">{match_percent}% 匹配</div>
-                        <a href="{url}" target="_blank" class="spotify-link">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="#1DB954">
+                        <a href="{{url}}" target="_blank" class="spotify-link" title="在 Spotify 開啟">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="#1DB954" aria-hidden="true">
                                 <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.6 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.84-.179-.84-.6 0-.359.24-.66.54-.78 4.56-1.021 8.52-.6 11.64.301.42.12.66.54.42.96zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.42 1.56-.301.421-1.02.599-1.56.3z"/>
                             </svg>
                         </a>
@@ -1447,8 +1517,7 @@ def recommend():
                     .track-name {{ font-weight: 600; font-size: 1rem; color: #ffffff; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
                     .track-artist {{ color: #b3b3b3; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
                     .track-actions {{ display: flex; align-items: center; gap: 12px; }}
-                    .match-score {{ background: rgba(29, 185, 84, 0.1); color: #1DB954; padding: 4px 8px; border-radius: 8px; font-size: 0.8rem; font-weight: 600;
-                                    border: 1px solid rgba(29, 185, 84, 0.2); }}
+                    /* ❷（可選）你可以移除原 .match-score 相關 CSS；這裡已不再使用 */
                     .spotify-link {{ display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%;
                                      background: rgba(29, 185, 84, 0.1); border: 1px solid rgba(29, 185, 84, 0.2); transition: all 0.2s ease; text-decoration: none; }}
                     .spotify-link:hover {{ background: #1DB954; transform: scale(1.1); }}
@@ -1532,13 +1601,13 @@ def recommend():
             return page
 
         # === 非預覽：直接建私人歌單（向後相容） ===
-        user   = sp.current_user(); user_id = (user or {}).get("id")
+        user   = sp.current_user(); user_id = (user or {{}}).get("id")
         ts     = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-        title  = f"Mooodyyy · {ts} UTC"
-        desc   = f"情境：{text}（由即時推薦建立）"
+        title  = f"Mooodyyy · {{ts}} UTC"
+        desc   = f"情境：{{text}}（由即時推薦建立）"
         plist  = sp.user_playlist_create(user=user_id, name=title, public=False, description=desc)
         sp.playlist_add_items(playlist_id=plist["id"], items=[t["id"] for t in top10 if t.get("id")])
-        url    = (plist.get("external_urls") or {}).get("spotify", url_for("welcome"))
+        url    = (plist.get("external_urls") or {{}}).get("spotify", url_for("welcome"))
         return redirect(url)
 
     except Exception as e:
@@ -1553,7 +1622,7 @@ def recommend():
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>系統錯誤 - Mooodyyy</title>
     <style>
-        body {
+        body {{
             font-family: 'Circular', -apple-system, BlinkMacSystemFont, sans-serif;
             background: linear-gradient(135deg, #191414, #0d1117);
             color: #fff;
@@ -1561,15 +1630,15 @@ def recommend():
             display: flex;
             align-items: center;
             justify-content: center;
-        }
-        .error-container {
+        }}
+        .error-container {{
             text-align: center;
             padding: 40px;
             background: rgba(255, 255, 255, 0.02);
             border-radius: 20px;
             border: 1px solid rgba(255, 255, 255, 0.1);
-        }
-        .retry-btn {
+        }}
+        .retry-btn {{
             background: #1DB954;
             color: #000;
             padding: 12px 24px;
@@ -1578,19 +1647,18 @@ def recommend():
             font-weight: 600;
             margin-top: 20px;
             display: inline-block;
-        }
+        }}
     </style>
 </head>
 <body>
     <div class="error-container">
         <h2>😵 系統出錯</h2>
-        <p>我們已記錄錯誤，請回首頁再試一次。</p>
+        <p>我們已記錄錯誤，請稍後重試</p>
         <a href="/welcome" class="retry-btn">回首頁</a>
     </div>
 </body>
 </html>
-        ''', 500
-
+'''
 
 @app.route("/create_playlist", methods=["POST"])
 def create_playlist():

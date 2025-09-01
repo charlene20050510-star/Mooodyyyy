@@ -1267,36 +1267,852 @@ def recommend():
     if not sp:
         return redirect(url_for("home"))
 
+    # 小工具（封裝在 route 內，方便一次貼上）
+    _CJK_RE = re.compile(r'[\u4e00-\u9fff]')  # 中日韓漢字
+
+    def _lang_hint_from_text(text: str):
+        t = (text or "").lower()
+        if "英文" in t or "english" in t or "eng only" in t or "english only" in t:
+            return "en"
+        if "中文" in t or "國語" in t or "chinese" in t:
+            return "zh"
+        return None
+
+    def _track_lang(tr: dict):
+        name = str(tr.get("name") or "")
+        artists = tr.get("artists") or []
+        artist_names = []
+        if isinstance(artists, list):
+            for a in artists:
+                artist_names.append(str(a.get("name") if isinstance(a, dict) else a))
+        else:
+            artist_names.append(str(artists))
+        s = name + " " + " ".join(artist_names)
+        return "zh" if _CJK_RE.search(s) else "en"
+
+    def _lang_filter(cands: list, want: str, keep_if_none=False):
+        if not want:
+            return cands
+        out = []
+        for tr in cands:
+            try:
+                l = _track_lang(tr)
+                if l == want or (keep_if_none and l is None):
+                    out.append(tr)
+            except Exception:
+                if keep_if_none:
+                    out.append(tr)
+        return out
+
+    def _weighted_pick(tracks, k=3):
+        """根據 _score 權重抽樣，避免永遠同幾首（高分仍較易被選）"""
+        bag = [t for t in tracks if isinstance(t.get("_score"), (int, float))]
+        if not bag:
+            return tracks[:k]
+        weights = [max(1e-6, t["_score"]) ** 2 for t in bag]
+        chosen, used = [], set()
+        for _ in range(min(k, len(bag))):
+            s = sum(weights)
+            r, acc, idx = random.random() * s, 0.0, 0
+            for i, w in enumerate(weights):
+                acc += w
+                if acc >= r:
+                    idx = i
+                    break
+            if bag[idx].get("id") in used:
+                for j in range(len(bag)):
+                    if bag[j].get("id") not in used:
+                        idx = j
+                        break
+            chosen.append(bag[idx]); used.add(bag[idx].get("id"))
+            del bag[idx]; del weights[idx]
+        return chosen
+
+    def _first_artist_id(tr):
+        a = tr.get("artists") or tr.get("artist") or []
+        if isinstance(a, list) and a and isinstance(a[0], dict):
+            return a[0].get("id")
+        if isinstance(a, dict):
+            return a.get("id")
+        return None
+
     # 取得情境文字
     text = (request.form.get("text") or request.args.get("text") or "").strip()
     if not text:
         return redirect(url_for("welcome"))
 
-    try:
-        # 這裡未來會加推薦邏輯
-        chosen = []
+    # 情境歷史（跨多次避重）
+    ctx_key = (" ".join(text.lower().split()))[:80]
+    history = session.get("hist", {})              # { ctx_key: [track_id, ...] }
+    recent_ids = history.get(ctx_key, [])[:40]     # 最近 4 批（最多 40 首）
 
-        # 預覽模式
+    try:
+        # === 1) 收集候選池（縮小以加速） ===
+        params    = map_text_to_params(text)
+        user_pool = collect_user_tracks(sp, max_n=100)
+        ext_pool  = collect_external_tracks_by_category(sp, text, 150)
+
+        # === 2) 特徵 & 語意分數 ===
+        ids_for_feat = []
+        for tr in (user_pool + ext_pool):
+            tid = tr.get("id")
+            if isinstance(tid, str) and len(tid) == 22:
+                ids_for_feat.append(tid)
+                if len(ids_for_feat) >= 250:  # 上限 250 → 更快
+                    break
+        feats   = audio_features_map(sp, ids_for_feat)
+        sem_map = build_semantic_map(text, user_pool + ext_pool, feats)
+
+        # === 3) 排序（top_n 放寬，給抽樣空間） ===
+        user_candidates = rank_pool_by_semantic_and_features(user_pool, feats, sem_map, params, top_n=20)
+        ext_candidates  = rank_pool_by_semantic_and_features(ext_pool,  feats, sem_map, params, top_n=200)
+
+        # 輕度打散
+        random.shuffle(user_candidates)
+        random.shuffle(ext_candidates)
+
+        # === 3.5) 語言偏好（英文/中文） ===
+        want_lang = _lang_hint_from_text(text)  # 'en' / 'zh' / None
+        if want_lang in ("en", "zh"):
+            user_candidates = _lang_filter(user_candidates, want_lang)
+            ext_candidates  = _lang_filter(ext_candidates,  want_lang)
+
+        # 讀取上一批要避開（由預覽頁傳回）
+        avoid_raw = (request.form.get("avoid") or request.args.get("avoid") or "").strip()
+        avoid_ids = set(i for i in avoid_raw.split(",") if len(i) == 22) if avoid_raw else set()
+
+        # 你的曲庫所有 id（避免外部重複你的曲庫曲目）
+        user_all_ids = {
+            t.get("id") for t in user_pool
+            if isinstance(t.get("id"), str) and len(t.get("id")) == 22
+        }
+
+        # === 4) 混合：3 首你的曲庫 + 7 首外部（避開 avoid_ids + recent_ids） ===
+        used = set(avoid_ids) | set(recent_ids)
+
+        # 4a) 曲庫錨點（加權抽樣取 3）
+        anchors_pool = [t for t in user_candidates if isinstance(t.get("id"), str) and t["id"] not in used][:20]
+        anchors = _weighted_pick(anchors_pool, k=3)
+        for tr in anchors:
+            if isinstance(tr.get("id"), str):
+                used.add(tr["id"])
+
+        # 4b) 外部 7 首（避免同藝人洗版、避開 used 與你的曲庫）
+        ext_chosen, seen_artists = [], set()
+        for tr in ext_candidates:
+            if len(ext_chosen) >= 7:
+                break
+            tid = tr.get("id")
+            if not (isinstance(tid, str) and len(tid) == 22):
+                continue
+            if tid in used or tid in user_all_ids:
+                continue
+            aid = _first_artist_id(tr)
+            if aid and aid in seen_artists:
+                continue
+            seen_artists.add(aid)
+            ext_chosen.append(tr); used.add(tid)
+
+        # 不足就放寬補滿到 7
+        if len(ext_chosen) < 7:
+            for tr in ext_candidates:
+                if len(ext_chosen) >= 7:
+                    break
+                tid = tr.get("id")
+                if not (isinstance(tid, str) and len(tid) == 22) or tid in used:
+                    continue
+                ext_chosen.append(tr); used.add(tid)
+
+        top10 = (anchors + ext_chosen)[:10]
+
+        # === 5) 預覽頁（精簡顯示，無「匹配度」） ===
         preview = (request.values.get("preview") or "").strip()
         if preview == "1":
-            page = f"""
+            # 清單：只顯示「歌手 — 歌名」
+            items = []
+            for i, tr in enumerate(top10, 1):
+                name = tr.get("name", "")
+                arts = tr.get("artists", [])
+                if isinstance(arts, list) and arts and isinstance(arts[0], dict):
+                    artists = ", ".join(a.get("name", "") for a in arts)
+                elif isinstance(arts, list):
+                    artists = ", ".join(str(a) for a in arts)
+                else:
+                    artists = str(arts) if arts else ""
+                
+                url = (tr.get("external_urls") or {}).get("spotify") or tr.get("url") or "#"
+                track_id = tr.get("id", f"sample{i}")
+
+                # 如果有 preview_url 可以加上，沒有就用假的
+                preview_url = tr.get("preview_url", "")
+
+                items.append(f'''
+                <div class="track-item" draggable="true" data-track-id="{track_id}" data-preview-url="{preview_url}">
+                    <div class="drag-handle">⋮⋮</div>
+                    <div class="track-number">{i:02d}</div>
+                    <div class="track-info">
+                        <div class="track-name">{name}</div>
+                        <div class="track-artist">{artists}</div>
+                    </div>
+                    <div class="track-actions">
+                        <button class="action-btn" onclick="previewTrack('{track_id}', '{name.replace("'", "\\'")}', '{artists.replace("'", "\\'")}', '{preview_url}')" title="預覽">
+                            ▶
+                        </button>
+                        <button class="action-btn" onclick="copySpotifyLink('{url}')" title="複製連結">
+                            📋
+                        </button>
+                        <a href="{url}" target="_blank" class="action-btn spotify-link" title="在 Spotify 開啟">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="#1DB954" aria-hidden="true">
+                                <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.6 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.84-.179-.84-.6 0-.359.24-.66.54-.78 4.56-1.021 8.52-.6 11.64.301.42.12.66.54.42.96zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.42 1.56-.301.421-1.02.599-1.56.3z"/>
+                            </svg>
+                        </a>
+                    </div>
+                </div>
+                ''')
+
+            songs_html = "\n".join(items)
+
+            # 當前這批歌曲 IDs
+            ids_str   = ",".join([t.get("id") for t in top10 if isinstance(t.get("id"), str) and len(t.get("id")) == 22])
+            safe_text = text.replace("'", "&#39;").replace('"', '&quot;')
+
+            # 把這批寫回情境歷史（新在前、去重保序、最多 40）
+            cur_ids = [t.get("id") for t in top10 if isinstance(t.get("id"), str) and len(t.get("id")) == 22]
+            old_ids = [x for x in recent_ids if x not in cur_ids]
+            history[ctx_key] = (cur_ids + old_ids)[:40]
+            session["hist"] = history
+
+            page = f'''
             <!doctype html>
-            <html>
-            <head><meta charset="utf-8"><title>測試</title></head>
+            <html lang="zh-Hant">
+            <head>
+                <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width,initial-scale=1">
+                <title>為你推薦的歌單 - Mooodyyy</title>
+                <style>
+                    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                    body {{
+                        font-family: 'Circular', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif;
+                        background: linear-gradient(135deg, #191414 0%, #0d1117 50%, #121212 100%);
+                        color: #ffffff;
+                        min-height: 100vh;
+                        line-height: 1.6;
+                    }}
+                    .container {{ max-width: 900px; margin: 0 auto; padding: 40px 20px; }}
+                    .header {{ text-align: center; margin-bottom: 40px; }}
+                    .logo {{ font-size: 2rem; font-weight: 900; background: linear-gradient(135deg, #1DB954, #1ed760);
+                             -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; margin-bottom: 16px; }}
+                    .result-title {{ font-size: 1.8rem; font-weight: 700; margin-bottom: 12px; color: #ffffff; }}
+                    .context-display {{ background: rgba(29, 185, 84, 0.1); border: 1px solid rgba(29, 185, 84, 0.2); border-radius: 16px;
+                                        padding: 20px; margin-bottom: 32px; text-align: center; }}
+                    .context-label {{ color: #1DB954; font-weight: 600; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }}
+                    .context-text {{ font-size: 1.1rem; color: #ffffff; font-style: italic; }}
+                    .playlist-container {{ background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 24px;
+                                           padding: 32px; backdrop-filter: blur(20px); margin-bottom: 32px; position: relative; overflow: hidden; }}
+                    .playlist-container::before {{ content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+                                                   background: linear-gradient(90deg, transparent, #1DB954, transparent); }}
+                    .playlist-header {{ display: flex; align-items: center; gap: 12px; margin-bottom: 24px; padding-bottom: 16px;
+                                        border-bottom: 1px solid rgba(255, 255, 255, 0.05); }}
+                    .playlist-icon {{ width: 48px; height: 48px; background: linear-gradient(135deg, #1DB954, #1ed760); border-radius: 12px;
+                                      display: flex; align-items: center; justify-content: center; font-size: 1.5rem; }}
+                    .playlist-info h3 {{ font-size: 1.4rem; font-weight: 700; margin-bottom: 4px; }}
+                    .playlist-info p {{ color: #b3b3b3; font-size: 0.95rem; }}
+                    .tracks-list {{ display: flex; flex-direction: column; gap: 8px; min-height: 400px; }}
+                    .track-item {{ 
+                        display: flex; align-items: center; gap: 16px; padding: 12px 16px; border-radius: 12px;
+                        background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05); 
+                        transition: all 0.2s ease; position: relative; overflow: hidden; cursor: grab;
+                    }}
+                    .track-item:hover {{ background: rgba(29, 185, 84, 0.05); border-color: rgba(29, 185, 84, 0.1); }}
+                    .track-item.dragging {{ 
+                        opacity: 0.5; cursor: grabbing; z-index: 1000; 
+                        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+                    }}
+                    .track-item.drag-over {{ 
+                        border-color: #1DB954; 
+                        box-shadow: 0 0 20px rgba(29, 185, 84, 0.3);
+                    }}
+                    .drag-handle {{ 
+                        color: #757575; cursor: grab; padding: 4px; 
+                        transition: color 0.2s ease;
+                    }}
+                    .drag-handle:hover {{ color: #1DB954; }}
+                    .track-number {{ font-size: 0.9rem; color: #757575; font-weight: 600; width: 24px; text-align: center; }}
+                    .track-info {{ flex: 1; min-width: 0; }}
+                    .track-name {{ font-weight: 600; font-size: 1rem; color: #ffffff; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+                    .track-artist {{ color: #b3b3b3; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+                    .track-actions {{ display: flex; align-items: center; gap: 8px; }}
+                    .action-btn {{ 
+                        display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; 
+                        border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.1); 
+                        background: rgba(255, 255, 255, 0.02); cursor: pointer; transition: all 0.2s ease; 
+                        color: #b3b3b3; text-decoration: none;
+                    }}
+                    .action-btn:hover {{ 
+                        background: rgba(29, 185, 84, 0.1); 
+                        border-color: rgba(29, 185, 84, 0.2); 
+                        color: #1DB954; 
+                        transform: scale(1.1);
+                    }}
+                    .spotify-link {{ background: rgba(29, 185, 84, 0.1); border-color: rgba(29, 185, 84, 0.2); }}
+                    .spotify-link:hover {{ background: #1DB954; }}
+                    .spotify-link:hover svg {{ fill: #000000; }}
+                    .actions {{ display: flex; gap: 16px; margin-top: 32px; justify-content: center; flex-wrap: wrap; }}
+                    .btn {{ padding: 14px 28px; border: none; border-radius: 50px; cursor: pointer; font-weight: 700; font-size: 1rem;
+                            transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94); text-decoration: none; display: inline-flex; align-items: center; gap: 8px; }}
+                    .btn:disabled {{ opacity: 0.5; cursor: not-allowed; transform: none !important; }}
+                    .btn-primary {{ background: linear-gradient(135deg, #1DB954, #1ed760); color: #000000; box-shadow: 0 6px 24px rgba(29, 185, 84, 0.25); }}
+                    .btn-primary:hover:not(:disabled) {{ transform: translateY(-2px); box-shadow: 0 8px 32px rgba(29, 185, 84, 0.35); }}
+                    .btn-secondary {{ background: rgba(255, 255, 255, 0.05); color: #ffffff; border: 1px solid rgba(255, 255, 255, 0.1); }}
+                    .btn-secondary:hover:not(:disabled) {{ background: rgba(255, 255, 255, 0.1); transform: translateY(-1px); }}
+                    .back-link {{ text-align: center; margin-top: 32px; }}
+                    .back-link a {{ color: #b3b3b3; text-decoration: none; font-size: 0.95rem; transition: color 0.2s ease; }}
+                    .back-link a:hover {{ color: #1DB954; }}
+
+                    /* Modal Styles */
+                    .modal-overlay {{
+                        position: fixed; inset: 0; background: rgba(0,0,0,0.8); backdrop-filter: blur(4px);
+                        display: flex; align-items: center; justify-content: center; z-index: 10000;
+                        opacity: 0; pointer-events: none; transition: all 0.3s ease;
+                    }}
+                    .modal-overlay.show {{ opacity: 1; pointer-events: all; }}
+                    .modal-content {{
+                        background: rgba(25, 20, 20, 0.95); border: 1px solid rgba(255, 255, 255, 0.1);
+                        border-radius: 20px; padding: 24px; max-width: 400px; width: 90%;
+                        box-shadow: 0 20px 60px rgba(0,0,0,0.5); position: relative;
+                    }}
+                    .modal-header {{
+                        display: flex; justify-content: space-between; align-items: center;
+                        margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+                    }}
+                    .modal-title {{ font-size: 1.2rem; font-weight: 700; color: #1DB954; }}
+                    .modal-close {{
+                        background: none; border: none; color: #b3b3b3; font-size: 1.5rem;
+                        cursor: pointer; padding: 4px; border-radius: 50%; transition: all 0.2s ease;
+                    }}
+                    .modal-close:hover {{ color: #fff; background: rgba(255, 255, 255, 0.1); }}
+                    .preview-player {{
+                        text-align: center; display: flex; flex-direction: column; gap: 16px;
+                    }}
+                    .preview-info {{ margin-bottom: 16px; }}
+                    .preview-track-name {{ font-weight: 600; margin-bottom: 4px; }}
+                    .preview-artist {{ color: #b3b3b3; font-size: 0.9rem; }}
+                    .preview-controls {{
+                        display: flex; align-items: center; justify-content: center; gap: 16px;
+                    }}
+                    .play-btn {{
+                        width: 56px; height: 56px; border-radius: 50%; background: #1DB954;
+                        border: none; cursor: pointer; display: flex; align-items: center; justify-content: center;
+                        transition: all 0.2s ease; color: #000;
+                    }}
+                    .play-btn:hover {{ transform: scale(1.1); background: #1ed760; }}
+                    .preview-progress {{
+                        width: 100%; height: 4px; background: rgba(255, 255, 255, 0.1);
+                        border-radius: 2px; margin: 16px 0; overflow: hidden;
+                    }}
+                    .preview-progress-bar {{
+                        height: 100%; background: #1DB954; width: 0%; transition: width 0.1s ease;
+                    }}
+                    .preview-time {{
+                        display: flex; justify-content: space-between; font-size: 0.8rem;
+                        color: #b3b3b3; margin-bottom: 16px;
+                    }}
+
+                    /* Toast Styles */
+                    .toast {{
+                        position: fixed; top: 20px; right: 20px; background: rgba(29, 185, 84, 0.9);
+                        color: #000; padding: 12px 20px; border-radius: 8px; font-weight: 600;
+                        transform: translateX(100%); transition: transform 0.3s ease; z-index: 10001;
+                        box-shadow: 0 4px 20px rgba(29, 185, 84, 0.3);
+                    }}
+                    .toast.show {{ transform: translateX(0); }}
+
+                    /* Loading Overlay */
+                    .loading-overlay {{
+                        position: fixed; inset: 0; background: rgba(0,0,0,0); backdrop-filter: blur(0px);
+                        display: flex; align-items: center; justify-content: center; opacity: 0;
+                        pointer-events: none; transition: opacity .35s ease, background .35s ease, backdrop-filter .35s ease;
+                        z-index: 9999;
+                    }}
+                    .loading-overlay.show {{
+                        opacity: 1; background: rgba(0,0,0,0.75); backdrop-filter: blur(6px);
+                        pointer-events: all;
+                    }}
+                    .loading-card {{
+                        display: flex; flex-direction: column; align-items: center; gap: 20px;
+                        padding: 40px 32px; border-radius: 20px; background: rgba(255,255,255,0.06);
+                        border: 1px solid rgba(255,255,255,0.12); box-shadow: 0 8px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
+                        min-width: 300px; text-align: center;
+                    }}
+                    .loading-logo {{
+                        width: 80px; height: 80px; border-radius: 20px; display: grid; place-items: center;
+                        background: radial-gradient(circle at 30% 30%, #1ed760, #1DB954 60%, #128a3e 100%);
+                        filter: drop-shadow(0 6px 24px rgba(29,185,84,.35)); animation: spin 2s linear infinite;
+                    }}
+                    @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
+                    .loading-logo svg {{ width: 42px; height: 42px; fill: #000; }}
+                    .loading-text {{ color: #e8e8e8; font-weight: 700; letter-spacing: .2px; font-size: 1.1rem; }}
+                    .loading-sub {{ color: #b3b3b3; font-size: .92rem; }}
+
+                    @media (max-width: 768px) {{
+                        .container {{ padding: 20px 16px; }}
+                        .playlist-container {{ padding: 20px; }}
+                        .track-item {{ padding: 12px; gap: 12px; }}
+                        .actions {{ flex-direction: column; }}
+                        .btn {{ width: 100%; justify-content: center; }}
+                        .track-actions {{ gap: 6px; }}
+                        .modal-content {{ margin: 20px; }}
+                        .toast {{ right: 10px; left: 10px; transform: translateY(-100%); }}
+                        .toast.show {{ transform: translateY(0); }}
+                    }}
+                </style>
+            </head>
             <body>
-                <h1>測試 Recommend</h1>
-                <p>你的情境：{text}</p>
+                <div class="container">
+                    <div class="header">
+                        <h1 class="logo">Mooodyyy</h1>
+                        <h2 class="result-title">🎯 為你找到了 {len(top10)} 首歌</h2>
+                    </div>
+                    <div class="context-display">
+                        <div class="context-label">你的情境</div>
+                        <div class="context-text">"{safe_text}"</div>
+                    </div>
+                    <div class="playlist-container">
+                        <div class="playlist-header">
+                            <div class="playlist-icon">🎵</div>
+                            <div class="playlist-info">
+                                <h3>專屬推薦歌單</h3>
+                                <p>基於你的聆聽習慣與情境分析 • 可拖曳調整順序</p>
+                            </div>
+                        </div>
+                        <div class="tracks-list" id="tracks-list">
+                            {songs_html}
+                        </div>
+                    </div>
+                    <div class="actions">
+                        <form method="POST" action="/recommend" id="regen-form">
+                            <input type="hidden" name="text" value="{safe_text}">
+                            <input type="hidden" name="preview" value="1">
+                            <input type="hidden" name="avoid" value="{ids_str}">
+                            <button type="submit" class="btn btn-secondary" id="regen-btn">🔄 重新生成</button>
+                        </form>
+                        <form method="POST" action="/create_playlist" id="save-form">
+                            <input type="hidden" name="text" value="{safe_text}">
+                            <input type="hidden" name="track_ids" value="{ids_str}">
+                            <button type="submit" class="btn btn-primary" id="save-btn">➕ 存到 Spotify</button>
+                        </form>
+                    </div>
+                    <div class="back-link">
+                        <a href="/welcome">↩️ 回到首頁</a>
+                    </div>
+                </div>
+
+                <!-- Preview Modal -->
+                <div class="modal-overlay" id="previewModal">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <div class="modal-title">🎵 歌曲預覽</div>
+                            <button class="modal-close" onclick="closePreview()">&times;</button>
+                        </div>
+                        <div class="preview-player">
+                            <div class="preview-info">
+                                <div class="preview-track-name" id="previewTrackName">Track Name</div>
+                                <div class="preview-artist" id="previewArtist">Artist Name</div>
+                            </div>
+                            <div class="preview-controls">
+                                <button class="play-btn" id="playBtn" onclick="togglePlayback()">▶</button>
+                            </div>
+                            <div class="preview-progress">
+                                <div class="preview-progress-bar" id="progressBar"></div>
+                            </div>
+                            <div class="preview-time">
+                                <span id="currentTime">0:00</span>
+                                <span id="duration">0:30</span>
+                            </div>
+                            <audio id="previewAudio" preload="none"></audio>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Toast Notification -->
+                <div class="toast" id="toast"></div>
+
+                <!-- Loading Overlay -->
+                <div class="loading-overlay" id="loading">
+                    <div class="loading-card">
+                        <div class="loading-logo">
+                            <svg viewBox="0 0 24 24" role="img" aria-label="Spotify">
+                                <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.6 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.84-.179-.84-.6 0-.359.24-.66.54-.78 4.56-1.021 8.52-.6 11.64.301.42.12.66.54.42.96zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.42 1.56-.301.421-1.02.599-1.56.3z"/>
+                            </svg>
+                        </div>
+                        <div class="loading-text">🎵 正在保存到 Spotify...</div>
+                        <div class="loading-sub">為你創建專屬歌單</div>
+                    </div>
+                </div>
+                
+                <script>
+                    // Drag and Drop functionality
+                    let draggedElement = null;
+                    let draggedIndex = -1;
+
+                    function initDragAndDrop() {{
+                        const tracksList = document.getElementById('tracks-list');
+                        const tracks = tracksList.querySelectorAll('.track-item');
+
+                        tracks.forEach((track, index) => {{
+                            track.addEventListener('dragstart', function(e) {{
+                                draggedElement = this;
+                                draggedIndex = index;
+                                this.classList.add('dragging');
+                                e.dataTransfer.effectAllowed = 'move';
+                            }});
+
+                            track.addEventListener('dragend', function() {{
+                                this.classList.remove('dragging');
+                                draggedElement = null;
+                                draggedIndex = -1;
+                                updateTrackNumbers();
+                            }});
+
+                            track.addEventListener('dragover', function(e) {{
+                                e.preventDefault();
+                                e.dataTransfer.dropEffect = 'move';
+                            }});
+
+                            track.addEventListener('dragenter', function(e) {{
+                                e.preventDefault();
+                                if (this !== draggedElement) {{
+                                    this.classList.add('drag-over');
+                                }}
+                            }});
+
+                            track.addEventListener('dragleave', function() {{
+                                this.classList.remove('drag-over');
+                            }});
+
+                            track.addEventListener('drop', function(e) {{
+                                e.preventDefault();
+                                this.classList.remove('drag-over');
+                                
+                                if (draggedElement && this !== draggedElement) {{
+                                    const allTracks = Array.from(tracksList.children);
+                                    const currentIndex = allTracks.indexOf(this);
+                                    
+                                    if (currentIndex > draggedIndex) {{
+                                        this.parentNode.insertBefore(draggedElement, this.nextSibling);
+                                    }} else {{
+                                        this.parentNode.insertBefore(draggedElement, this);
+                                    }}
+                                    updateTrackNumbers();
+                                    updateFormData();
+                                }}
+                            }});
+                        }});
+                    }}
+
+                    function updateTrackNumbers() {{
+                        const tracks = document.querySelectorAll('.track-item');
+                        tracks.forEach((track, index) => {{
+                            const numberElement = track.querySelector('.track-number');
+                            numberElement.textContent = String(index + 1).padStart(2, '0');
+                        }});
+                    }}
+
+                    function updateFormData() {{
+                        const tracks = document.querySelectorAll('.track-item');
+                        const trackIds = Array.from(tracks).map(track => track.getAttribute('data-track-id'));
+                        
+                        // Update both forms with new order
+                        document.querySelector('#save-form input[name="track_ids"]').value = trackIds.join(',');
+                        document.querySelector('#regen-form input[name="avoid"]').value = trackIds.join(',');
+                    }}
+
+                    // Preview functionality
+                    let currentAudio = null;
+                    let progressInterval = null;
+
+                    function previewTrack(trackId, trackName, artist, previewUrl) {{
+                        document.getElementById('previewTrackName').textContent = trackName;
+                        document.getElementById('previewArtist').textContent = artist;
+                        
+                        const modal = document.getElementById('previewModal');
+                        modal.classList.add('show');
+                        
+                        // Reset audio player
+                        if (currentAudio) {{
+                            currentAudio.pause();
+                            currentAudio = null;
+                        }}
+                        
+                        if (previewUrl && previewUrl !== '') {{
+                            currentAudio = document.getElementById('previewAudio');
+                            currentAudio.src = previewUrl;
+                            currentAudio.addEventListener('loadedmetadata', function() {{
+                                document.getElementById('duration').textContent = formatTime(this.duration);
+                            }});
+                            currentAudio.addEventListener('ended', function() {{
+                                document.getElementById('playBtn').textContent = '▶';
+                                document.getElementById('progressBar').style.width = '0%';
+                                document.getElementById('currentTime').textContent = '0:00';
+                                if (progressInterval) clearInterval(progressInterval);
+                            }});
+                        }} else {{
+                            showToast('此歌曲暫無預覽片段');
+                        }}
+                    }}
+
+                    function closePreview() {{
+                        const modal = document.getElementById('previewModal');
+                        modal.classList.remove('show');
+                        
+                        if (currentAudio) {{
+                            currentAudio.pause();
+                            currentAudio = null;
+                        }}
+                        
+                        if (progressInterval) {{
+                            clearInterval(progressInterval);
+                        }}
+                        
+                        document.getElementById('playBtn').textContent = '▶';
+                        document.getElementById('progressBar').style.width = '0%';
+                        document.getElementById('currentTime').textContent = '0:00';
+                    }}
+
+                    function togglePlayback() {{
+                        const playBtn = document.getElementById('playBtn');
+                        
+                        if (!currentAudio || !currentAudio.src) {{
+                            showToast('無法播放預覽');
+                            return;
+                        }}
+                        
+                        if (currentAudio.paused) {{
+                            currentAudio.play().then(() => {{
+                                playBtn.textContent = '⏸';
+                                startProgressTracking();
+                            }}).catch(error => {{
+                                console.error('播放失败:', error);
+                                showToast('播放失敗');
+                            }});
+                        }} else {{
+                            currentAudio.pause();
+                            playBtn.textContent = '▶';
+                            if (progressInterval) clearInterval(progressInterval);
+                        }}
+                    }}
+
+                    function startProgressTracking() {{
+                        progressInterval = setInterval(() => {{
+                            if (currentAudio && !currentAudio.paused) {{
+                                const progress = (currentAudio.currentTime / currentAudio.duration) * 100;
+                                document.getElementById('progressBar').style.width = progress + '%';
+                                document.getElementById('currentTime').textContent = formatTime(currentAudio.currentTime);
+                            }}
+                        }}, 100);
+                    }}
+
+                    function formatTime(seconds) {{
+                        const mins = Math.floor(seconds / 60);
+                        const secs = Math.floor(seconds % 60);
+                        return `${{mins}}:${{secs.toString().padStart(2, '0')}}`;
+                    }}
+
+                    // Copy to clipboard functionality
+                    function copySpotifyLink(url) {{
+                        if (navigator.clipboard) {{
+                            navigator.clipboard.writeText(url).then(() => {{
+                                showToast('✅ Spotify 連結已複製到剪貼簿');
+                            }}).catch(() => {{
+                                fallbackCopyText(url);
+                            }});
+                        }} else {{
+                            fallbackCopyText(url);
+                        }}
+                    }}
+
+                    function fallbackCopyText(text) {{
+                        const textArea = document.createElement('textarea');
+                        textArea.value = text;
+                        textArea.style.position = 'fixed';
+                        textArea.style.left = '-999999px';
+                        textArea.style.top = '-999999px';
+                        document.body.appendChild(textArea);
+                        textArea.focus();
+                        textArea.select();
+                        
+                        try {{
+                            document.execCommand('copy');
+                            showToast('✅ Spotify 連結已複製到剪貼簿');
+                        }} catch (err) {{
+                            showToast('❌ 複製失敗，請手動複製連結');
+                        }}
+                        
+                        document.body.removeChild(textArea);
+                    }}
+
+                    // Toast notification
+                    function showToast(message) {{
+                        const toast = document.getElementById('toast');
+                        toast.textContent = message;
+                        toast.classList.add('show');
+                        
+                        setTimeout(() => {{
+                            toast.classList.remove('show');
+                        }}, 3000);
+                    }}
+
+                    // Form submission handling
+                    function initFormHandling() {{
+                        const saveForm = document.getElementById('save-form');
+                        const regenForm = document.getElementById('regen-form');
+                        const loading = document.getElementById('loading');
+                        const saveBtn = document.getElementById('save-btn');
+                        const regenBtn = document.getElementById('regen-btn');
+
+                        // Save to Spotify form
+                        saveForm.addEventListener('submit', function(e) {{
+                            loading.classList.add('show');
+                            saveBtn.disabled = true;
+                            regenBtn.disabled = true;
+                            
+                            // Update track IDs based on current order
+                            updateFormData();
+                        }});
+
+                        // Regenerate form
+                        regenForm.addEventListener('submit', function(e) {{
+                            regenBtn.disabled = true;
+                            saveBtn.disabled = true;
+                            
+                            // Update avoid list based on current tracks
+                            updateFormData();
+                        }});
+                    }}
+
+                    // Initialize all functionality when DOM loads
+                    document.addEventListener('DOMContentLoaded', function() {{
+                        initDragAndDrop();
+                        initFormHandling();
+                        updateFormData(); // Initialize with current track order
+                        
+                        // Track entrance animation
+                        const tracks = document.querySelectorAll('.track-item');
+                        tracks.forEach((track, index) => {{
+                            track.style.opacity = '0';
+                            track.style.transform = 'translateY(20px)';
+                            setTimeout(() => {{
+                                track.style.transition = 'all 0.5s ease';
+                                track.style.opacity = '1';
+                                track.style.transform = 'translateY(0)';
+                            }}, index * 100);
+                        }});
+
+                        // Close modal when clicking outside
+                        document.getElementById('previewModal').addEventListener('click', function(e) {{
+                            if (e.target === this) {{
+                                closePreview();
+                            }}
+                        }});
+
+                        // Keyboard shortcuts
+                        document.addEventListener('keydown', function(e) {{
+                            if (e.key === 'Escape') {{
+                                closePreview();
+                            }}
+                            if (e.key === ' ' && document.getElementById('previewModal').classList.contains('show')) {{
+                                e.preventDefault();
+                                togglePlayback();
+                            }}
+                        }});
+                    }});
+
+                    // Handle page visibility change to pause audio
+                    document.addEventListener('visibilitychange', function() {{
+                        if (document.hidden && currentAudio && !currentAudio.paused) {{
+                            currentAudio.pause();
+                            document.getElementById('playBtn').textContent = '▶';
+                            if (progressInterval) clearInterval(progressInterval);
+                        }}
+                    }});
+
+                    // Prevent form resubmission on page refresh
+                    window.addEventListener('pageshow', function(event) {{
+                        const loading = document.getElementById('loading');
+                        const saveBtn = document.getElementById('save-btn');
+                        const regenBtn = document.getElementById('regen-btn');
+                        
+                        if (event.persisted) {{
+                            loading.classList.remove('show');
+                            saveBtn.disabled = false;
+                            regenBtn.disabled = false;
+                        }}
+                    }});
+                </script>
             </body>
             </html>
-            """
+            '''
             return page
 
-        return redirect(url_for("welcome"))
+        # === 非預覽：直接建立私人歌單（向後相容） ===
+        user   = sp.current_user(); user_id = (user or {}).get("id")
+        ts     = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+        title  = f"Mooodyyy · {ts} UTC"
+        desc   = f"情境：{text}（由即時推薦建立）"
+        plist  = sp.user_playlist_create(user=user_id, name=title, public=False, description=desc)
+        sp.playlist_add_items(playlist_id=plist["id"], items=[t["id"] for t in top10 if t.get("id")])
+        url    = (plist.get("external_urls") or {}).get("spotify", url_for("welcome"))
+        return redirect(url)
 
     except Exception as e:
-        print("❌ recommend error:", e)
-        traceback.print_exc()
-        return redirect(url_for("welcome"))
+        # 讓錯誤真的可見，並回 500
+        print("⚠ recommend error:", e)
+        print(traceback.format_exc())
+        return '''
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>系統錯誤 - Mooodyyy</title>
+    <style>
+        body {
+            font-family: 'Circular', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #191414, #0d1117);
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .error-container {
+            text-align: center;
+            padding: 40px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .retry-btn {
+            background: #1DB954;
+            color: #000;
+            padding: 12px 24px;
+            border-radius: 25px;
+            text-decoration: none;
+            font-weight: 600;
+            margin-top: 20px;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <h2>😵 系統出錯</h2>
+        <p>我們已記錄錯誤，請稍後重試</p>
+        <a href="/welcome" class="retry-btn">回首頁</a>
+    </div>
+</body>
+</html>
+''', 500
 
 
 

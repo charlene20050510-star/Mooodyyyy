@@ -889,6 +889,7 @@ def welcome():
     if not sp:
         return redirect(url_for("home"))
 
+    # 取用戶名稱（失敗就顯示「音樂愛好者」）
     try:
         me = sp.current_user()
         name = (me or {}).get("display_name") or "音樂愛好者"
@@ -899,581 +900,404 @@ def welcome():
 <!doctype html>
 <html lang="zh-Hant">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Mooodyyy - 開始創建歌單</title>
-  <style>
-    * {{ margin:0; padding:0; box-sizing:border-box; }}
-    body {{
-      font-family:'Circular',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;
-      background:linear-gradient(135deg,#191414 0%,#0d1117 50%,#121212 100%);
-      color:#fff; min-height:100vh; line-height:1.6;
-    }}
-    .container {{ max-width:800px; margin:0 auto; padding:40px 20px;
-      min-height:100vh; display:flex; flex-direction:column; justify-content:center; }}
-    .header {{ text-align:center; margin-bottom:40px; }}
-    .logo {{ font-size:2.5rem; font-weight:900;
-      background:linear-gradient(135deg,#1DB954,#1ed760);
-      -webkit-background-clip:text; -webkit-text-fill-color:transparent;
-      margin-bottom:8px; letter-spacing:-1px; }}
-    .welcome-text {{ font-size:1.2rem; color:#b3b3b3; margin-bottom:8px; }}
-    .user-name {{ font-size:1.4rem; font-weight:600; color:#1DB954; }}
-    .main-card {{
-      background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.08);
-      border-radius:24px; padding:40px; backdrop-filter:blur(20px);
-      box-shadow:0 20px 60px rgba(0,0,0,0.3);
-      position:relative; overflow:hidden;
-    }}
-    .main-card::before {{
-      content:''; position:absolute; top:0; left:0; right:0; height:1px;
-      background:linear-gradient(90deg,transparent,#1DB954,transparent);
-    }}
-    textarea {{
-      width:100%; min-height:120px; padding:20px; font-size:1.1rem;
-      border-radius:16px; border:2px solid rgba(255,255,255,0.1);
-      background:rgba(0,0,0,0.2); color:#fff; resize:vertical;
-    }}
-    textarea:focus {{
-      outline:none; border-color:#1DB954;
-      box-shadow:0 0 0 3px rgba(29,185,84,0.1);
-      background:rgba(0,0,0,0.4);
-    }}
-    .submit-btn {{
-      background:linear-gradient(135deg,#1DB954,#1ed760); color:#000;
-      border:none; padding:16px 40px; border-radius:50px;
-      font-size:1.1rem; font-weight:700; cursor:pointer;
-      transition:all .3s cubic-bezier(.25,.46,.45,.94);
-      box-shadow:0 8px 32px rgba(29,185,84,.25); width:100%;
-    }}
-    .examples {{ margin-top:32px; padding:24px; background:rgba(29,185,84,.05);
-      border-radius:16px; border:1px solid rgba(29,185,84,.1); }}
-    .example-tag {{
-      background:rgba(255,255,255,.05); color:#b3b3b3;
-      padding:8px 16px; border-radius:20px; font-size:.9rem;
-      cursor:pointer; transition:.2s;
-    }}
-    .example-tag:hover {{ background:rgba(29,185,84,.1); color:#1DB954; }}
-    .footer {{ text-align:center; margin-top:40px; }}
-    .logout-link {{ color:#b3b3b3; text-decoration:none; font-size:.9rem; }}
-    .logout-link:hover {{ color:#1DB954; }}
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Mooodyyy - 開始創建歌單</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        
+        body {{
+            font-family: 'Circular', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif;
+            background: linear-gradient(135deg, #191414 0%, #0d1117 50%, #121212 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            line-height: 1.6;
+        }}
+        
+        .container {{
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }}
+        
+        .header {{
+            text-align: center;
+            margin-bottom: 40px;
+        }}
+        
+        .logo {{
+            font-size: 2.5rem;
+            font-weight: 900;
+            background: linear-gradient(135deg, #1DB954, #1ed760);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 8px;
+            letter-spacing: -1px;
+        }}
+        
+        .welcome-text {{
+            font-size: 1.2rem;
+            color: #b3b3b3;
+            margin-bottom: 8px;
+        }}
+        
+        .user-name {{
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: #1DB954;
+        }}
+        
+        .main-card {{
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 24px;
+            padding: 40px;
+            backdrop-filter: blur(20px);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            position: relative;
+            overflow: hidden;
+        }}
+        
+        .main-card::before {{
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, #1DB954, transparent);
+        }}
+        
+        .form-title {{
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #ffffff;
+        }}
+        
+        .form-subtitle {{
+            color: #b3b3b3;
+            margin-bottom: 32px;
+            font-size: 1rem;
+        }}
+        
+        .textarea-container {{
+            position: relative;
+            margin-bottom: 24px;
+        }}
+        
+        textarea {{
+            width: 100%;
+            min-height: 120px;
+            padding: 20px;
+            font-size: 1.1rem;
+            border-radius: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            background: rgba(0, 0, 0, 0.2);
+            color: #ffffff;
+            resize: vertical;
+            transition: all 0.3s ease;
+            font-family: inherit;
+            line-height: 1.5;
+        }}
+        
+        textarea:focus {{
+            outline: none;
+            border-color: #1DB954;
+            box-shadow: 0 0 0 3px rgba(29, 185, 84, 0.1);
+            background: rgba(0, 0, 0, 0.4);
+        }}
+        
+        textarea::placeholder {{
+            color: #757575;
+            font-style: italic;
+        }}
+        
+        .submit-btn {{
+            background: linear-gradient(135deg, #1DB954, #1ed760);
+            color: #000000;
+            border: none;
+            padding: 16px 40px;
+            border-radius: 50px;
+            font-size: 1.1rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+            box-shadow: 0 8px 32px rgba(29, 185, 84, 0.25);
+            position: relative;
+            overflow: hidden;
+            width: 100%;
+        }}
+        
+        .submit-btn:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 12px 40px rgba(29, 185, 84, 0.35);
+        }}
+        
+        .submit-btn:active {{
+            transform: translateY(0);
+        }}
+        
+        .examples {{
+            margin-top: 32px;
+            padding: 24px;
+            background: rgba(29, 185, 84, 0.05);
+            border-radius: 16px;
+            border: 1px solid rgba(29, 185, 84, 0.1);
+        }}
+        
+        .examples-title {{
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #1DB954;
+            font-size: 1rem;
+        }}
+        
+        .example-tags {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }}
+        
+        .example-tag {{
+            background: rgba(255, 255, 255, 0.05);
+            color: #b3b3b3;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }}
+        
+        .example-tag:hover {{
+            background: rgba(29, 185, 84, 0.1);
+            color: #1DB954;
+            border-color: rgba(29, 185, 84, 0.2);
+        }}
+        
+        .footer {{
+            text-align: center;
+            margin-top: 40px;
+            padding-top: 24px;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+        }}
+        
+        .logout-link {{
+            color: #b3b3b3;
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: color 0.2s ease;
+        }}
+        
+        .logout-link:hover {{
+            color: #1DB954;
+        }}
 
-    /* === Loading Overlay === */
-    .loading-overlay {{
-      position:fixed; inset:0; background:rgba(0,0,0,0);
-      backdrop-filter:blur(0px); display:flex; align-items:center; justify-content:center;
-      opacity:0; pointer-events:none;
-      transition:opacity .35s ease,background .35s ease,backdrop-filter .35s ease;
-      z-index:9999;
-    }}
-    .loading-overlay.show {{
-      opacity:1; background:rgba(0,0,0,.75); backdrop-filter:blur(6px); pointer-events:all;
-    }}
-    .loading-card {{
-      display:flex; flex-direction:column; align-items:center; gap:14px;
-      padding:32px 28px; border-radius:20px;
-      background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12);
-      box-shadow:0 8px 40px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.08);
-    }}
-    .loading-logo {{
-      width:72px;height:72px;border-radius:18px;display:grid;place-items:center;
-      background:radial-gradient(circle at 30% 30%,#1ed760,#1DB954 60%,#128a3e 100%);
-      filter:drop-shadow(0 6px 24px rgba(29,185,84,.35));
-    }}
-    .loading-logo svg {{ width:38px;height:38px;fill:#000; }}
-    .loading-text {{ color:#e8e8e8; font-weight:700; letter-spacing:.2px; }}
-    .loading-sub {{ color:#b3b3b3; font-size:.92rem; }}
+        /* ===== Loading Overlay (glassmorphism, Spotify 深色系) ===== */
+        .loading-overlay {{
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0);
+            backdrop-filter: blur(0px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .35s ease, background .35s ease, backdrop-filter .35s ease;
+            z-index: 9999;
+        }}
+        .loading-overlay.show {{
+            opacity: 1;
+            background: rgba(0,0,0,0.75);
+            backdrop-filter: blur(6px);
+            pointer-events: all;
+        }}
+        .loading-card {{
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 14px;
+            padding: 32px 28px;
+            border-radius: 20px;
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.12);
+            box-shadow: 0 8px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
+        }}
+        .loading-logo {{
+            width: 72px; height: 72px;
+            border-radius: 18px;
+            display: grid; place-items: center;
+            background: radial-gradient(circle at 30% 30%, #1ed760, #1DB954 60%, #128a3e 100%);
+            filter: drop-shadow(0 6px 24px rgba(29,185,84,.35));
+        }}
+        .loading-logo svg {{
+            width: 38px; height: 38px;
+            fill: #000;
+        }}
+        .loading-text {{
+            color: #e8e8e8;
+            font-weight: 700;
+            letter-spacing: .2px;
+        }}
+        .loading-sub {{
+            color: #b3b3b3;
+            font-size: .92rem;
+        }}
 
-    /* === Pulse 動畫 === */
-    @keyframes pulse {{0%{{transform:scale(1);}}50%{{transform:scale(1.05);}}100%{{transform:scale(1);}}}}
-    .loading-overlay.show .loading-logo {{ animation:pulse 1.4s ease-in-out infinite; }}
-
-    /* === 打字效果 cursor === */
-    .loading-text::after {{
-      content:""; display:inline-block; width:1ch; height:1em;
-      vertical-align:-0.2em; border-right:2px solid #e8e8e8;
-      animation:caret .8s steps(1,end) infinite;
-    }}
-    @keyframes caret {{0%,49%{{opacity:1;}}50%,100%{{opacity:0;}}}}
-  </style>
+        @media (max-width: 768px) {{
+            .container {{
+                padding: 20px 16px;
+            }}
+            .main-card {{
+                padding: 24px;
+            }}
+            .logo {{
+                font-size: 2.2rem;
+            }}
+            .welcome-text {{
+                font-size: 1.1rem;
+            }}
+        }}
+    </style>
 </head>
 <body>
-  <div class="container">
-    <div class="header">
-      <h1 class="logo">Mooodyyy</h1>
-      <p class="welcome-text">歡迎回來</p>
-      <p class="user-name">{name}</p>
-    </div>
-    <div class="main-card">
-      <h2 class="form-title">描述你的當下情境</h2>
-      <p class="form-subtitle">告訴我你的心情、活動或想要的氛圍，我會為你推薦最適合的歌單</p>
-      <form id="gen-form" action="/recommend" method="post">
-        <div class="textarea-container">
-          <textarea name="text" placeholder="例如：深夜漫步、雨天咖啡廳寫作、專心讀書需要輕音樂..." required></textarea>
+    <div class="container">
+        <div class="header">
+            <h1 class="logo">Mooodyyy</h1>
+            <p class="welcome-text">歡迎回來</p>
+            <p class="user-name">{name}</p>
         </div>
-        <input type="hidden" name="preview" value="1">
-        <button type="submit" class="submit-btn">🎵 開始推薦音樂</button>
-      </form>
-      <div class="examples">
-        <div class="examples-title">💡 靈感提示</div>
-        <div class="example-tags">
-          <span class="example-tag" onclick="fillExample(this)">深夜散步</span>
-          <span class="example-tag" onclick="fillExample(this)">下雨天寫作</span>
-          <span class="example-tag" onclick="fillExample(this)">週末早晨</span>
-          <span class="example-tag" onclick="fillExample(this)">運動健身</span>
-          <span class="example-tag" onclick="fillExample(this)">放鬆冥想</span>
+        
+        <div class="main-card">
+            <h2 class="form-title">描述你的當下情境</h2>
+            <p class="form-subtitle">告訴我你的心情、活動或想要的氛圍，我會為你推薦最適合的歌單</p>
+            
+            <form id="gen-form" action="/recommend" method="post">
+                <div class="textarea-container">
+                    <textarea 
+                        name="text" 
+                        placeholder="例如：深夜漫步思考人生、雨天在咖啡廳寫作、想念遠方的朋友、專心讀書需要輕音樂、週五晚上想放鬆..."
+                        required
+                    ></textarea>
+                </div>
+                
+                <input type="hidden" name="preview" value="1">
+                <button type="submit" class="submit-btn">
+                    🎵 開始推薦音樂
+                </button>
+            </form>
+            
+            <div class="examples">
+                <div class="examples-title">💡 靈感提示</div>
+                <div class="example-tags">
+                    <span class="example-tag" onclick="fillExample(this)">深夜散步</span>
+                    <span class="example-tag" onclick="fillExample(this)">下雨天寫作</span>
+                    <span class="example-tag" onclick="fillExample(this)">週末早晨</span>
+                    <span class="example-tag" onclick="fillExample(this)">運動健身</span>
+                    <span class="example-tag" onclick="fillExample(this)">放鬆冥想</span>
+                    <span class="example-tag" onclick="fillExample(this)">專心讀書</span>
+                    <span class="example-tag" onclick="fillExample(this)">思念某人</span>
+                    <span class="example-tag" onclick="fillExample(this)">開車兜風</span>
+                </div>
+            </div>
         </div>
-      </div>
+        
+        <div class="footer">
+            <a href="/logout" class="logout-link">登出 Spotify</a>
+        </div>
     </div>
-    <div class="footer"><a href="/logout" class="logout-link">登出 Spotify</a></div>
-  </div>
 
-  <!-- Overlay -->
-  <div class="loading-overlay" id="loading">
-    <div class="loading-card">
-      <div class="loading-logo" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.6 0 12 0z"/></svg>
-      </div>
-      <div class="loading-text">🎧 為你量身打造歌單中...</div>
-      <div class="loading-sub">Mooodyyy 正在理解你的情境</div>
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loading">
+        <div class="loading-card">
+            <div class="loading-logo" aria-hidden="true">
+                <!-- Spotify glyph -->
+                <svg viewBox="0 0 24 24" role="img" aria-label="Spotify">
+                    <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.6 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.84-.179-.84-.6 0-.359.24-.66.54-.78 4.56-1.021 8.52-.6 11.64.301.42.12.66.54.42.96zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.42 1.56-.301.421-1.02.599-1.56.3z"/>
+                </svg>
+            </div>
+            <div class="loading-text">🎧 為你量身打造歌單中...</div>
+            <div class="loading-sub">Mooodyyy 正在理解你的情境與喜好</div>
+        </div>
     </div>
-  </div>
+    
+    <script>
+        function fillExample(element) {{
+            const textarea = document.querySelector('textarea[name="text"]');
+            textarea.value = element.textContent;
+            textarea.focus();
+        }}
+        
+        document.addEventListener('DOMContentLoaded', function() {{
+            const textarea = document.querySelector('textarea');
+            const submitBtn = document.querySelector('.submit-btn');
+            const form = document.getElementById('gen-form');
+            const loading = document.getElementById('loading');
+            
+            textarea.addEventListener('input', function() {{
+                if (this.value.trim()) {{
+                    submitBtn.style.opacity = '1';
+                    submitBtn.style.pointerEvents = 'auto';
+                }} else {{
+                    submitBtn.style.opacity = '0.7';
+                }}
+            }});
 
-  <script>
-    function fillExample(el){{
-      const t=document.querySelector('textarea[name="text"]');
-      t.value=el.textContent; t.focus();
-    }}
-    document.addEventListener('DOMContentLoaded',function(){{
-      const textarea=document.querySelector('textarea');
-      const btn=document.querySelector('.submit-btn');
-      const form=document.getElementById('gen-form');
-      const loading=document.getElementById('loading');
-      const textEl=document.querySelector('.loading-text');
-      textarea.addEventListener('input',function(){{
-        if(this.value.trim()){{btn.style.opacity='1';btn.style.pointerEvents='auto';}}
-        else{{btn.style.opacity='0.7';}}
-      }});
-      form.addEventListener('submit',function(){{ loading.classList.add('show'); }});
-      // 打字機文字輪播
-      const msgs=[
-        "🎧 為你量身打造歌單中...",
-        "🔍 正在理解你的情境...",
-        "💡 思考最適合的音樂...",
-        "🎵 快好了，馬上帶來推薦..."
-      ];
-      let idx=0;
-      function type(full,i=0){{
-        textEl.textContent=full.slice(0,i);
-        if(i<full.length) setTimeout(()=>type(full,i+1),24);
-        else setTimeout(()=>{{idx=(idx+1)%msgs.length; type(msgs[idx],0);}},800);
-      }}
-      const obs=new MutationObserver(()=>{{
-        if(loading.classList.contains('show')){{idx=0; type(msgs[idx],0);}}
-      }});
-      obs.observe(loading,{{attributes:true,attributeFilter:['class']}});
-    }});
-  </script>
+            // 提交時顯示 Loading Overlay（不阻擋原本 form 提交）
+            form.addEventListener('submit', function() {{
+                loading.classList.add('show');
+            }});
+        }});
+    </script>
 </body>
 </html>
 '''
 
-
-@app.route("/recommend", methods=["POST"])
+@app.route("/recommend", methods=["GET", "POST"])
 def recommend():
-    """
-    產生「Playlist 預覽頁」：
-    - 顯示推薦歌曲清單
-    - 支援：拖曳排序 / 單曲預覽 (Spotify embed) / 複製連結
-    - 兩個表單：重新產生（保留 avoid）／存到 Spotify（依照拖曳後順序）
-    - 存檔時顯示 Saving Overlay、並防雙送出
-    """
+    import traceback
     sp = get_spotify_client()
     if not sp:
         return redirect(url_for("home"))
 
-    # 1) 取得使用者名稱（失敗就用預設）
-    try:
-        me = sp.current_user()
-        display_name = (me or {}).get("display_name") or "音樂愛好者"
-    except Exception:
-        display_name = "音樂愛好者"
+    # 取得情境文字
+    text = (request.form.get("text") or request.args.get("text") or "").strip()
+    if not text:
+        return redirect(url_for("welcome"))
 
-    # 2) 拿表單資料
-    context_text = (request.form.get("text") or "").strip()
-    avoid_raw = (request.form.get("avoid") or "").strip()
-    avoid_ids = set([x for x in avoid_raw.split(",") if x])
-
-    # 3) 取得推薦清單
-    # ---------------------------------------------------------
-    # === TODO: 這裡接上你的推薦邏輯 ===
-    # 期望輸出格式：
-    # recommended = [
-    #   {"id": "spotify_track_id", "name": "歌名", "artists": "歌手A, 歌手B", "uri": "spotify:track:..."},
-    #   ...
-    # ]
-    # 可依 avoid_ids 過濾，避免重複
-    recommended = []
     try:
-        # 例如：
-        # recommended = build_recommendations(sp, context_text, avoid_ids=avoid_ids, limit=10)
-        pass
+        # 這裡未來會加推薦邏輯
+        chosen = []
+
+        # 預覽模式
+        preview = (request.values.get("preview") or "").strip()
+        if preview == "1":
+            page = f"""
+            <!doctype html>
+            <html>
+            <head><meta charset="utf-8"><title>測試</title></head>
+            <body>
+                <h1>測試 Recommend</h1>
+                <p>你的情境：{text}</p>
+            </body>
+            </html>
+            """
+            return page
+
+        return redirect(url_for("welcome"))
+
     except Exception as e:
-        print("recommend() build error:", e)
+        print("❌ recommend error:", e)
+        traceback.print_exc()
+        return redirect(url_for("welcome"))
 
-    # 如果還沒接上邏輯，先給示範資料，讓 UI 能跑
-    if not recommended:
-        demo = [
-            ("4uLU6hMCjMI75M1A2tKUQC", "Never Gonna Give You Up", "Rick Astley"),
-            ("7ouMYWpwJ422jRcDASZB7P", "Beautiful Things", "Benson Boone"),
-            ("3VlbOrM6nYPprVvzBZllE5", "River Flows In You", "Yiruma"),
-            ("2X485T9Z5Ly0xyaghN73ed", "lovely (with Khalid)", "Billie Eilish, Khalid"),
-            ("3AJwUDP919kvQ9QcozQPxg", "Yellow", "Coldplay"),
-        ]
-        for tid, name, artists in demo:
-            if tid not in avoid_ids:
-                recommended.append({"id": tid, "name": name, "artists": artists, "uri": f"spotify:track:{tid}"})
-
-    # 4) 更新 avoid（把這次顯示的也加進去）
-    shown_ids = [t["id"] for t in recommended if t.get("id")]
-    avoid_ids |= set(shown_ids)
-    avoid_str = ",".join(sorted(list(avoid_ids)))
-
-    # 5) 組 HTML
-    # ---------------------------------------------------------
-    def track_row(idx, t):
-        tid = t.get("id", "")
-        name = t.get("name", "（未命名）")
-        artists = t.get("artists", "")
-        open_url = f"https://open.spotify.com/track/{tid}" if tid else "#"
-        return f"""
-        <div class="track-item" draggable="true" data-id="{tid}">
-          <div class="drag-handle" title="拖曳排序">⠿</div>
-          <div class="track-index">{idx:02d}</div>
-          <div class="track-meta">
-            <div class="track-name">{name}</div>
-            <div class="track-artists">{artists}</div>
-          </div>
-          <div class="track-actions">
-            <button type="button" class="btn btn-mini preview-btn" data-id="{tid}" title="預覽 30 秒">▶ 預覽</button>
-            <button type="button" class="btn btn-mini copy-btn" data-url="{open_url}" title="複製連結">⧉ 複製</button>
-            <a class="btn btn-mini open-btn" href="{open_url}" target="_blank" rel="noopener" title="在 Spotify 開啟">↗ 開啟</a>
-          </div>
-        </div>
-        """
-
-    tracks_html = "\n".join([track_row(i, t) for i, t in enumerate(recommended, start=1)])
-    track_ids_str = ",".join(shown_ids)
-
-    page = f"""
-<!doctype html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>為你推薦的歌單 - Mooodyyy</title>
-  <style>
-    * {{ margin:0; padding:0; box-sizing:border-box; }}
-    body {{
-      font-family:'Circular',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;
-      background:linear-gradient(135deg,#191414 0%,#0d1117 50%,#121212 100%);
-      color:#fff; min-height:100vh; line-height:1.6;
-    }}
-    .container {{ max-width:960px; margin:0 auto; padding:40px 20px; }}
-    .header {{ text-align:center; margin-bottom:24px; }}
-    .logo {{
-      font-size:2rem; font-weight:900;
-      background:linear-gradient(135deg,#1DB954,#1ed760);
-      -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
-      margin-bottom:6px;
-    }}
-    .subtitle {{ color:#b3b3b3; }}
-    .context-display {{
-      background:rgba(29,185,84,.09); border:1px solid rgba(29,185,84,.22);
-      border-radius:16px; padding:16px 18px; margin:18px auto 26px; color:#d9ffd9;
-    }}
-    .card {{
-      background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08);
-      border-radius:20px; padding:22px; backdrop-filter:blur(16px);
-      box-shadow:0 16px 48px rgba(0,0,0,0.3);
-    }}
-
-    /* 清單與曲目 */
-    .track-list {{ display:block; }}
-    .track-item {{
-      display:flex; align-items:center; gap:12px; padding:12px 10px; border-radius:12px;
-      border:1px dashed rgba(255,255,255,0.06); background:rgba(255,255,255,0.02);
-      transition:background .2s ease, border-color .2s ease, transform .15s ease;
-      user-select:none;
-    }}
-    .track-item + .track-item {{ margin-top:10px; }}
-    .track-item:hover {{ background:rgba(255,255,255,0.04); border-color:rgba(255,255,255,0.12); }}
-    .track-item.dragging {{ opacity:.8; transform:scale(0.995); border-color:#1DB954; background:rgba(29,185,84,.08); }}
-    .drag-handle {{ cursor:grab; color:#98ffa7; width:22px; text-align:center; font-size:1rem; opacity:.9; }}
-    .track-index {{ width:36px; color:#1ed760; font-weight:800; opacity:.95; text-align:right; }}
-    .track-meta {{ flex:1 1 auto; }}
-    .track-name {{ font-weight:700; color:#fff; }}
-    .track-artists {{ color:#b3b3b3; font-size:.95rem; }}
-    .track-actions {{ display:flex; gap:8px; flex-wrap:wrap; }}
-
-    /* 按鈕 */
-    .actions {{ display:flex; gap:12px; margin-top:20px; flex-wrap:wrap; }}
-    .btn {{
-      appearance:none; border:none; border-radius:999px; cursor:pointer;
-      font-weight:800; padding:12px 16px; line-height:1;
-      transition:transform .12s ease, box-shadow .2s ease, filter .2s ease;
-    }}
-    .btn-mini {{ padding:8px 12px; font-size:.9rem; border:1px solid rgba(255,255,255,.18); background:rgba(255,255,255,.06); color:#e8e8e8; }}
-    .btn-primary {{
-      background:linear-gradient(135deg,#1DB954,#1ed760); color:#000;
-      box-shadow:0 10px 28px rgba(29,185,84,.32);
-    }}
-    .btn-secondary {{ background:rgba(255,255,255,.06); color:#e8e8e8; border:1px solid rgba(255,255,255,.14); }}
-    .btn:disabled {{ opacity:.6; cursor:not-allowed; }}
-    .btn:hover {{ transform:translateY(-1px); filter:brightness(1.02); }}
-
-    .footer {{ text-align:center; margin-top:24px; }}
-    .link {{ color:#b3b3b3; text-decoration:none; }}
-    .link:hover {{ color:#1DB954; }}
-
-    /* Saving Overlay */
-    .saving-overlay {{
-      position: fixed; inset: 0; z-index: 9999;
-      display: flex; align-items: center; justify-content: center;
-      background: rgba(0,0,0,0); backdrop-filter: blur(0px);
-      opacity: 0; pointer-events: none;
-      transition: opacity .35s ease, background .35s ease, backdrop-filter .35s ease;
-    }}
-    .saving-overlay.show {{
-      opacity: 1; background: rgba(0,0,0,0.75); backdrop-filter: blur(6px);
-      pointer-events: all;
-    }}
-    .saving-card {{
-      display: flex; flex-direction: column; align-items: center; gap: 14px;
-      padding: 32px 28px; border-radius: 20px;
-      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
-      box-shadow: 0 8px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
-    }}
-    .saving-logo {{
-      width: 72px; height: 72px; border-radius: 18px; display: grid; place-items: center;
-      background: radial-gradient(circle at 30% 30%, #1ed760, #1DB954 60%, #128a3e 100%);
-      filter: drop-shadow(0 6px 24px rgba(29,185,84,.35));
-      animation: pulse 1.4s ease-in-out infinite;
-    }}
-    .saving-logo svg {{ width: 38px; height: 38px; fill: #000; }}
-    .saving-text {{ color: #e8e8e8; font-weight: 700; letter-spacing: .2px; }}
-    .saving-sub {{ color: #b3b3b3; font-size: .92rem; }}
-    @keyframes pulse {{ 0% {{ transform: scale(1); }} 50% {{ transform: scale(1.05); }} 100% {{ transform: scale(1); }} }}
-
-    /* 預覽 Modal */
-    .modal {{
-      position:fixed; inset:0; z-index:10000; display:none;
-      align-items:center; justify-content:center;
-      background:rgba(0,0,0,.6); backdrop-filter:blur(4px);
-    }}
-    .modal.show {{ display:flex; }}
-    .modal-card {{
-      width:min(560px,92vw); border-radius:16px; overflow:hidden;
-      background:#121212; border:1px solid rgba(255,255,255,.12);
-      box-shadow:0 20px 60px rgba(0,0,0,.5);
-    }}
-    .modal-head {{
-      display:flex; align-items:center; justify-content:space-between;
-      padding:12px 16px; background:#0f1115; color:#e8e8e8; font-weight:700;
-    }}
-    .modal-body {{ padding:12px 12px 16px; }}
-    .close-btn {{ background:transparent; color:#e8e8e8; border:none; font-size:1.2rem; cursor:pointer; }}
-    .toast {{
-      position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
-      background:rgba(0,0,0,.8); color:#e8e8e8; padding:10px 14px; border-radius:10px;
-      border:1px solid rgba(255,255,255,.12); display:none;
-    }}
-    .toast.show {{ display:block; }}
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="header">
-      <div class="logo">Mooodyyy</div>
-      <div class="subtitle">嗨，{display_name}，根據你的情境我先幫你配了幾首：</div>
-    </div>
-
-    <div class="context-display">「{context_text}」</div>
-
-    <div class="card">
-      <div id="track-list" class="track-list">
-        {tracks_html}
-      </div>
-
-      <div class="actions">
-        <!-- 重新產生（保留 avoid） -->
-        <form id="regen-form" action="/recommend" method="post" style="display:inline;">
-          <input type="hidden" name="text" value="{context_text}">
-          <input id="regen-avoid" type="hidden" name="avoid" value="{avoid_str}">
-          <button class="btn btn-secondary" type="submit">↻ 再幫我換一批</button>
-        </form>
-
-        <!-- 存到 Spotify：會依照拖曳後順序送出 -->
-        <form id="save-form" action="/create_playlist" method="post" style="display:inline;">
-          <input type="hidden" name="text" value="{context_text}">
-          <input id="save-track-ids" type="hidden" name="track_ids" value="{track_ids_str}">
-          <button class="btn btn-primary" type="submit">🎵 存到 Spotify</button>
-        </form>
-      </div>
-    </div>
-
-    <div class="footer">
-      <a class="link" href="/welcome">← 回到輸入頁</a>
-    </div>
-  </div>
-
-  <!-- Saving Overlay -->
-  <div class="saving-overlay" id="saving">
-    <div class="saving-card">
-      <div class="saving-logo" aria-hidden="true">
-        <svg viewBox="0 0 24 24" role="img" aria-label="Spotify">
-          <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.6 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.84-.179-.84-.6 0-.359.24-.66.54-.78 4.56-1.021 8.52-.6 11.64.301.42.12.66.54.42.96zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.42 1.56-.301.421-1.02.599-1.56.3z"/>
-        </svg>
-      </div>
-      <div class="saving-text">🎵 正在建立你的 Spotify 歌單...</div>
-      <div class="saving-sub">稍等一下下，我們把歌曲加入清單</div>
-    </div>
-  </div>
-
-  <!-- 預覽 Modal -->
-  <div id="modal" class="modal" aria-hidden="true">
-    <div class="modal-card">
-      <div class="modal-head">
-        <div>🔊 單曲預覽</div>
-        <button class="close-btn" type="button" id="modal-close">✕</button>
-      </div>
-      <div class="modal-body">
-        <iframe id="preview-frame" style="border-radius:12px" src="" width="100%" height="152" frameborder="0" allow="autoplay; clipboard-write; encrypted-media; picture-in-picture" loading="lazy"></iframe>
-      </div>
-    </div>
-  </div>
-
-  <!-- Toast -->
-  <div id="toast" class="toast">已複製連結！</div>
-
-  <script>
-    // ====== 工具 ======
-    function showToast(msg) {{
-      const t = document.getElementById('toast');
-      t.textContent = msg || '已複製連結！';
-      t.classList.add('show');
-      setTimeout(() => t.classList.remove('show'), 1400);
-    }}
-    function currentIds() {{
-      return Array.from(document.querySelectorAll('.track-item')).map(el => el.getAttribute('data-id')).filter(Boolean);
-    }}
-    function renumber() {{
-      document.querySelectorAll('.track-item .track-index').forEach((el, i) => el.textContent = String(i+1).padStart(2,'0'));
-    }}
-
-    // ====== 複製連結 / 預覽播放 ======
-    document.addEventListener('click', async (e) => {{
-      const copyBtn = e.target.closest('.copy-btn');
-      if (copyBtn) {{
-        const url = copyBtn.getAttribute('data-url');
-        try {{
-          await navigator.clipboard.writeText(url);
-          showToast('已複製連結！');
-        }} catch (_) {{
-          showToast('複製失敗，請手動複製');
-        }}
-      }}
-      const previewBtn = e.target.closest('.preview-btn');
-      if (previewBtn) {{
-        const tid = previewBtn.getAttribute('data-id');
-        const src = `https://open.spotify.com/embed/track/${{tid}}?utm_source=generator`;
-        document.getElementById('preview-frame').src = src;
-        document.getElementById('modal').classList.add('show');
-      }}
-      const closeBtn = e.target.closest('#modal-close');
-      const modal = document.getElementById('modal');
-      if (closeBtn || e.target === modal) {{
-        modal.classList.remove('show');
-        document.getElementById('preview-frame').src = '';
-      }}
-    }});
-
-    // ====== 拖曳排序 (原生 DnD) ======
-    const list = document.getElementById('track-list');
-    let draggingEl = null;
-
-    list.addEventListener('dragstart', (e) => {{
-      const item = e.target.closest('.track-item');
-      if (!item) return;
-      draggingEl = item;
-      item.classList.add('dragging');
-      e.dataTransfer.effectAllowed = 'move';
-      // for Firefox
-      e.dataTransfer.setData('text/plain', item.getAttribute('data-id') || '');
-    }});
-    list.addEventListener('dragend', (e) => {{
-      const item = e.target.closest('.track-item');
-      if (item) item.classList.remove('dragging');
-      draggingEl = null;
-      renumber();
-    }});
-    list.addEventListener('dragover', (e) => {{
-      e.preventDefault();
-      const afterEl = getDragAfterElement(list, e.clientY);
-      if (!draggingEl) return;
-      if (afterEl == null) {{
-        list.appendChild(draggingEl);
-      }} else {{
-        list.insertBefore(draggingEl, afterEl);
-      }}
-    }});
-    function getDragAfterElement(container, y) {{
-      const els = [...container.querySelectorAll('.track-item:not(.dragging)')];
-      return els.reduce((closest, child) => {{
-        const box = child.getBoundingClientRect();
-        const offset = y - box.top - box.height / 2;
-        if (offset < 0 && offset > closest.offset) {{
-          return {{ offset, element: child }};
-        }} else {{
-          return closest;
-        }}
-      }}, {{ offset: Number.NEGATIVE_INFINITY }}).element;
-    }}
-
-    // ====== 表單提交：寫入正確順序、顯示 Saving、與防重複送出 ======
-    const saveForm = document.getElementById('save-form');
-    const regenForm = document.getElementById('regen-form');
-    const saving = document.getElementById('saving');
-
-    function disableAllButtons() {{
-      document.querySelectorAll('button').forEach(b => b.disabled = true);
-    }}
-
-    if (saveForm && saving) {{
-      saveForm.addEventListener('submit', function () {{
-        // 依拖曳後順序寫入
-        const ids = currentIds();
-        document.getElementById('save-track-ids').value = ids.join(',');
-        disableAllButtons();
-        saving.classList.add('show');
-      }});
-    }}
-    if (regenForm) {{
-      regenForm.addEventListener('submit', function () {{
-        // 保留 avoid
-        const ids = currentIds();
-        // 把當前顯示的都加入 avoid，避免下次重複
-        const avoidInput = document.getElementById('regen-avoid');
-        const existed = (avoidInput.value || '').split(',').filter(Boolean);
-        const merged = Array.from(new Set([...existed, ...ids]));
-        avoidInput.value = merged.join(',');
-        disableAllButtons();
-      }});
-    }}
-  </script>
-</body>
-</html>
-"""
-    return page
 
 
 @app.route("/create_playlist", methods=["POST"])

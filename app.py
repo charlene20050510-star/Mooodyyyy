@@ -645,7 +645,6 @@ def collect_external_tracks_by_category(sp, text: str, max_n: int = 200):
 # Routes
 # ======================================================
 
-
 @app.route('/static/<path:filename>')
 def static_files(filename):
     return send_from_directory('static', filename)
@@ -866,10 +865,6 @@ def home():
 </body>
 </html>
 '''
-
-@app.route('/static/<path:filename>')
-def static_files(filename):
-    return send_from_directory('static', filename)
 
 @app.route("/welcome")
 def welcome():

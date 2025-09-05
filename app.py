@@ -649,6 +649,10 @@ def collect_external_tracks_by_category(sp, text: str, max_n: int = 200):
 @app.route('/static/<path:filename>')
 def static_files(filename):
     return send_from_directory('static', filename)
+
+@app.route("/")
+def home():
+    return '''
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -863,67 +867,9 @@ def static_files(filename):
 </html>
 '''
 
-@app.route("/login")
-def login():
-    return redirect(oauth().get_authorize_url())
-
-
-@app.route("/callback")
-def callback():
-    code = request.args.get("code")
-    if not code:
-        return redirect(url_for("home"))
-    try:
-        token_info = oauth().get_access_token(code, as_dict=True)
-        _store_token(token_info)
-        return redirect(url_for("welcome"))
-    except Exception as e:
-        print(f"❌ OAuth callback error: {e}")
-        return '''
-<!doctype html>
-<html lang="zh-Hant">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>授權失敗</title>
-    <style>
-        body {
-            font-family: 'Circular', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: linear-gradient(135deg, #191414, #0d1117);
-            color: #fff;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .error-container {
-            text-align: center;
-            padding: 40px;
-            background: rgba(255, 255, 255, 0.02);
-            border-radius: 20px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-        }
-        .retry-btn {
-            background: #1DB954;
-            color: #000;
-            padding: 12px 24px;
-            border-radius: 25px;
-            text-decoration: none;
-            font-weight: 600;
-            margin-top: 20px;
-            display: inline-block;
-        }
-    </style>
-</head>
-<body>
-    <div class="error-container">
-        <h2>❌ 授權失敗</h2>
-        <p>連接 Spotify 時發生錯誤</p>
-        <a href="/" class="retry-btn">重新嘗試</a>
-    </div>
-</body>
-</html>
-'''
+@app.route('/static/<path:filename>')
+def static_files(filename):
+    return send_from_directory('static', filename)
 
 @app.route("/welcome")
 def welcome():

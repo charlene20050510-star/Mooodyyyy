@@ -12,10 +12,11 @@ import random, re
 from flask import request, redirect, url_for, session
 import random, re
 import traceback
+from flask import Flask, request, redirect, session, url_for, send_from_directory
 
 
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.secret_key = os.environ.get("SECRET_KEY", "devsecret")
 SCOPE = "user-library-read user-top-read playlist-modify-public playlist-modify-private"
 app.secret_key = "replace-with-a-long-random-secret"
@@ -644,9 +645,10 @@ def collect_external_tracks_by_category(sp, text: str, max_n: int = 200):
 # Routes
 # ======================================================
 
-@app.route("/")
-def home():
-    return '''
+
+@app.route('/static/<path:filename>')
+def static_files(filename):
+    return send_from_directory('static', filename)
 <!doctype html>
 <html lang="zh-Hant">
 <head>

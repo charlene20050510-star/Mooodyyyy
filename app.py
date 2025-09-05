@@ -1201,7 +1201,7 @@ def welcome():
         
         <div class="main-card">
             <div class="character-container">
-                <img src="/static/character.png" alt="Mooodyyy Character" class="character-mascot">
+                <img src="character.png" alt="Mooodyyy Character" class="character-mascot">
             </div>
             
             <h2 class="form-title">描述你的當下情境</h2>

@@ -1259,10 +1259,9 @@ def welcome():
 </body>
 </html>
 '''
-
 @app.route("/recommend", methods=["GET", "POST"])
 def recommend():
-    import traceback  # 就地引用，免動上面 imports
+    import traceback
     sp = get_spotify_client()
     if not sp:
         return redirect(url_for("home"))
@@ -1381,11 +1380,11 @@ def recommend():
         avoid_raw = (request.form.get("avoid") or request.args.get("avoid") or "").strip()
         avoid_ids = set(i for i in avoid_raw.split(",") if len(i) == 22) if avoid_raw else set()
 
-        # 你的曲庫所有 id（避免外部重複你的曲庫曲目）
-        user_all_ids = {{
+        # 你的曲庫所有 id（避免外部重複你的曲庫曲目）—— 修正為正確的 set comprehension
+        user_all_ids = {
             t.get("id") for t in user_pool
             if isinstance(t.get("id"), str) and len(t.get("id")) == 22
-        }}
+        }
 
         # === 4) 混合：3 首你的曲庫 + 7 首外部（避開 avoid_ids + recent_ids） ===
         used = set(avoid_ids) | set(recent_ids)
@@ -1439,19 +1438,17 @@ def recommend():
                     artists = ", ".join(str(a) for a in arts)
                 else:
                     artists = str(arts) if arts else ""
-                url = (tr.get("external_urls") or {{}}).get("spotify") or tr.get("url") or "#"
-
-                # ❶（已刪除）匹配度的計算與顯示
+                url = (tr.get("external_urls") or {}).get("spotify") or tr.get("url") or "#"
 
                 items.append(f'''
                 <div class="track-item">
-                    <div class="track-number">{{i:02d}}</div>
+                    <div class="track-number">{i:02d}</div>
                     <div class="track-info">
-                        <div class="track-name">{{name}}</div>
-                        <div class="track-artist">{{artists}}</div>
+                        <div class="track-name">{name}</div>
+                        <div class="track-artist">{artists}</div>
                     </div>
                     <div class="track-actions">
-                        <a href="{{url}}" target="_blank" class="spotify-link" title="在 Spotify 開啟">
+                        <a href="{url}" target="_blank" class="spotify-link" title="在 Spotify 開啟">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="#1DB954" aria-hidden="true">
                                 <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.6 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.84-.179-.84-.6 0-.359.24-.66.54-.78 4.56-1.021 8.52-.6 11.64.301.42.12.66.54.42.96zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.42 1.56-.301.421-1.02.599-1.56.3z"/>
                             </svg>
@@ -1517,7 +1514,6 @@ def recommend():
                     .track-name {{ font-weight: 600; font-size: 1rem; color: #ffffff; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
                     .track-artist {{ color: #b3b3b3; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
                     .track-actions {{ display: flex; align-items: center; gap: 12px; }}
-                    /* ❷（可選）你可以移除原 .match-score 相關 CSS；這裡已不再使用 */
                     .spotify-link {{ display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%;
                                      background: rgba(29, 185, 84, 0.1); border: 1px solid rgba(29, 185, 84, 0.2); transition: all 0.2s ease; text-decoration: none; }}
                     .spotify-link:hover {{ background: #1DB954; transform: scale(1.1); }}
@@ -1601,13 +1597,13 @@ def recommend():
             return page
 
         # === 非預覽：直接建私人歌單（向後相容） ===
-        user   = sp.current_user(); user_id = (user or {{}}).get("id")
+        user   = sp.current_user(); user_id = (user or {}).get("id")
         ts     = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-        title  = f"Mooodyyy · {{ts}} UTC"
-        desc   = f"情境：{{text}}（由即時推薦建立）"
+        title  = f"Mooodyyy · {ts} UTC"
+        desc   = f"情境：{text}（由即時推薦建立）"
         plist  = sp.user_playlist_create(user=user_id, name=title, public=False, description=desc)
         sp.playlist_add_items(playlist_id=plist["id"], items=[t["id"] for t in top10 if t.get("id")])
-        url    = (plist.get("external_urls") or {{}}).get("spotify", url_for("welcome"))
+        url    = (plist.get("external_urls") or {}).get("spotify", url_for("welcome"))
         return redirect(url)
 
     except Exception as e:

@@ -973,17 +973,38 @@ def welcome():
             background: linear-gradient(90deg, transparent, #1DB954, transparent);
         }}
         
+        .character-container {{
+            display: flex;
+            justify-content: center;
+            margin-bottom: 24px;
+        }}
+        
+        .character-mascot {{
+            width: 100px;
+            height: auto;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(29, 185, 84, 0.2);
+            transition: all 0.3s ease;
+        }}
+        
+        .character-mascot:hover {{
+            transform: scale(1.05);
+            box-shadow: 0 12px 40px rgba(29, 185, 84, 0.3);
+        }}
+        
         .form-title {{
             font-size: 1.3rem;
             font-weight: 600;
             margin-bottom: 16px;
             color: #ffffff;
+            text-align: center;
         }}
         
         .form-subtitle {{
             color: #b3b3b3;
             margin-bottom: 32px;
             font-size: 1rem;
+            text-align: center;
         }}
         
         .textarea-container {{
@@ -1164,6 +1185,9 @@ def welcome():
             .welcome-text {{
                 font-size: 1.1rem;
             }}
+            .character-mascot {{
+                width: 80px;
+            }}
         }}
     </style>
 </head>
@@ -1176,6 +1200,10 @@ def welcome():
         </div>
         
         <div class="main-card">
+            <div class="character-container">
+                <img src="/static/character.png" alt="Mooodyyy Character" class="character-mascot">
+            </div>
+            
             <h2 class="form-title">描述你的當下情境</h2>
             <p class="form-subtitle">告訴我你的心情、活動或想要的氛圍，我會為你推薦最適合的歌單</p>
             

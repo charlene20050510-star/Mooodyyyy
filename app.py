@@ -866,6 +866,25 @@ def home():
 </html>
 '''
 
+@app.route("/login")
+def login():
+    auth_url = oauth().get_authorize_url()
+    return redirect(auth_url)
+
+@app.route("/callback")
+def callback():
+    code = request.args.get("code")
+    if not code:
+        return redirect(url_for("home"))
+    
+    try:
+        token_info = oauth().get_access_token(code)
+        _store_token(token_info)
+        return redirect(url_for("welcome"))
+    except Exception as e:
+        print(f"OAuth callback error: {e}")
+        return redirect(url_for("home"))
+
 @app.route("/welcome")
 def welcome():
     sp = get_spotify_client()
